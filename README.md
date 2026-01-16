@@ -2,6 +2,10 @@
 
 A real-time cryptocurrency order book and trades viewer for Hyperliquid exchange, built with Next.js and TypeScript.
 
+## Demo
+
+Check out the live application: [https://hyperliquid-orderbook-ws.vercel.app](https://hyperliquid-orderbook-ws.vercel.app)
+
 ## Features
 
 - **Real-time WebSocket Data**: Live order book and trade updates
