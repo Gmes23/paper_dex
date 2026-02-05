@@ -37,6 +37,24 @@ export interface OrderBookLevel {
     time: string;
     id: string;
   }
+
+  export interface TradeFormState {
+    tradeAsset: Symbol | 'USDC',
+    inputPrice: string;
+    size: string;
+    activeTradeTab: 'Long' | 'Short';
+    markPrice: number | null;
+    PNL: number | null;
+  }
+
+  export interface Position {
+    id: string;
+    date: number;
+    tradeAsset: Symbol | 'USDC',
+    inputPrice: string;
+    size: string;
+    activeTradeTab: 'Long' | 'Short';
+  } 
   
   export type Symbol = 'BTC' | 'ETH';
   export type Tab = 'orderbook' | 'trades';

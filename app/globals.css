@@ -79,3 +79,10 @@ body {
 .animate-flash-row-green {
   animation: flashGreen 850ms ease-out;
 }
+
+input,
+textarea,
+select,
+button {
+  outline:none;
+}

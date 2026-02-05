@@ -1,0 +1,1082 @@
+================================================================================
+HYPERLIQUID ORDER BOOK WIDGET - LATEST UPDATES DOCUMENTATION
+================================================================================
+
+This document covers the latest architectural changes and new features added
+to the Hyperliquid Order Book Widget. These updates include:
+
+1. Web Worker for Orderbook Processing (Performance Optimization)
+2. Two-Column Layout for OrderBook (UI Enhancement)
+3. Dynamic Trade Row Heights (Visual Enhancement)
+4. TradeTab Component (New Feature - Trading Interface)
+5. Error Handling (Robustness)
+6. DisplaySide Prop for Depth Bars (Layout Flexibility)
+
+================================================================================
+ARCHITECTURE CHANGES OVERVIEW
+================================================================================
+
+BEFORE (Original Architecture):
+-------------------------------
+WebSocket -> useOrderBookState (Main Thread) -> Components
+             ^
+             |-- aggregateLevels() runs on MAIN THREAD
+             |-- Flash detection state in React refs
+             |-- Can cause UI jank during heavy processing
+
+
+AFTER (Updated Architecture):
+-----------------------------
+WebSocket -> useOrderBookState -> Web Worker -> Components
+             ^                    ^
+             |                    |-- aggregateLevels() runs OFF MAIN THREAD
+             |                    |-- Flash detection state in WORKER
+             |                    |-- Zero UI blocking
+             |
+             |-- Only manages worker communication
+             |-- Receives pre-processed data
+
+
+VISUAL LAYOUT CHANGE:
+---------------------
+BEFORE:                          AFTER:
++------------------+             +------------------+------------------+
+|      ASKS        |             |      ASKS        |      BIDS        |
++------------------+             | (depth bars ->)  | (<- depth bars)  |
+|     SPREAD       |             +------------------+------------------+
++------------------+             |              SPREAD                 |
+|      BIDS        |             +-------------------------------------+
++------------------+
+
+
+================================================================================
+NEW FILE: workers/orderbook.worker.ts
+================================================================================
+
+PURPOSE:
+--------
+Offloads expensive orderbook processing (aggregation, cumulative totals,
+flash detection) to a Web Worker thread, preventing UI blocking during
+high-frequency WebSocket updates.
+
+KEY RESPONSIBILITIES:
+---------------------
+- Receives raw bid/ask data via postMessage
+- Maintains flash animation state (knownBidPrices, knownAskPrices)
+- Calls aggregateLevels() for price grouping
+- Calculates spread and max totals
+- Memory cleanup: Prunes known prices when sets grow > 1000
+- Posts processed results back to main thread
+
+ARCHITECTURE PATTERN:
+---------------------
+Worker maintains its own persistent state (known prices, skip flash flag)
+that survives between messages. This was previously stored in React refs,
+but refs can't be accessed from workers. Moving state INTO the worker
+keeps flash detection working correctly.
+
+MEMORY MANAGEMENT:
+------------------
+When knownPrices sets exceed 1000 entries, the worker filters them to
+only keep prices that exist in the current orderbook. This prevents
+unbounded memory growth during long sessions.
+
+CODE:
+-----
+// workers/orderbook.worker.ts
+import { aggregateLevels } from '../lib/orderbook';
+import { NUM_ROWS } from '../lib/constants';
+
+// Maintain flash animation state INSIDE the worker
+let knownBidPrices = new Set<number>();
+let knownAskPrices = new Set<number>();
+let skipFlash = true;
+let currentSymbol: string | null = null;
+let currentGrouping: number | null = null;
+
+self.onmessage = (event) => {
+  const { rawBids, rawAsks, priceGrouping, symbol } = event.data;
+
+  // Reset known prices if symbol or grouping changed
+  if (symbol !== currentSymbol || priceGrouping !== currentGrouping) {
+    knownBidPrices = new Set();
+    knownAskPrices = new Set();
+    skipFlash = true;
+    currentSymbol = symbol;
+    currentGrouping = priceGrouping;
+  }
+
+  // Aggregate with flash detection
+  const bidsResult = aggregateLevels(
+    rawBids,
+    priceGrouping,
+    true,
+    knownBidPrices,  // <- Persistent state in worker
+    skipFlash
+  );
+
+  const asksResult = aggregateLevels(
+    rawAsks,
+    priceGrouping,
+    false,
+    knownAskPrices,  // <- Persistent state in worker
+    skipFlash
+  );
+
+  // Update known prices for next time
+  knownBidPrices = bidsResult.newKnownPrices;
+  knownAskPrices = asksResult.newKnownPrices;
+
+  if(knownAskPrices.size > 1000 && knownBidPrices.size > 1000) {
+    const currentOrderBookPrices = new Set([...rawBids, ...rawAsks].map(object => parseFloat(object.px)));
+
+    knownAskPrices = new Set([...knownAskPrices].filter(p => currentOrderBookPrices.has(p)))
+
+    knownBidPrices = new Set([...knownBidPrices].filter((bidprice) => currentOrderBookPrices.has(bidprice)))
+  }
+
+  skipFlash = false;
+
+  // Process results
+  const aggregatedBids = bidsResult.levels.slice(0, NUM_ROWS);
+  const aggregatedAsks = asksResult.levels.slice(0, NUM_ROWS);
+  const displayAsks = [...aggregatedAsks].reverse();
+
+  // Calculate spread
+  let spread = null;
+  if (aggregatedBids.length > 0 && aggregatedAsks.length > 0) {
+    const bestBid = aggregatedBids[0].price;
+    const bestAsk = aggregatedAsks[0].price;
+    const spreadValue = bestAsk - bestBid;
+    const spreadPercentage = (spreadValue / bestAsk) * 100;
+    spread = { value: spreadValue, percentage: spreadPercentage };
+  }
+
+  // Calculate max totals
+  const maxBidTotalAsset = aggregatedBids.length > 0
+    ? Math.max(...aggregatedBids.map(b => b.total))
+    : 0;
+  const maxBidTotalUsdc = aggregatedBids.length > 0
+    ? Math.max(...aggregatedBids.map(b => b.totalUsdc))
+    : 0;
+
+  const maxAskTotalAsset = displayAsks.length > 0
+    ? Math.max(...displayAsks.map(a => a.total))
+    : 0;
+  const maxAskTotalUsdc = displayAsks.length > 0
+    ? Math.max(...displayAsks.map(a => a.totalUsdc))
+    : 0;
+
+  // Send complete results back
+  self.postMessage({
+    bids: aggregatedBids,
+    asks: displayAsks,
+    spread,
+    maxBidTotal: {
+      asset: maxBidTotalAsset,
+      usdc: maxBidTotalUsdc
+    },
+    maxAskTotal: {
+      asset: maxAskTotalAsset,
+      usdc: maxAskTotalUsdc
+    },
+    symbol  // Echo back for verification
+  });
+};
+
+export {};
+
+
+================================================================================
+UPDATED FILE: hooks/useOrderBookState.tsx
+================================================================================
+
+PURPOSE:
+--------
+Refactored to delegate all heavy processing to Web Worker. Now only manages
+worker lifecycle and communication.
+
+KEY CHANGES:
+------------
+REMOVED:
+- rawBids/rawAsks state (no longer stored on main thread)
+- aggregateLevels() calls (moved to worker)
+- knownPrices refs (moved to worker)
+- useMemo for aggregation (worker handles this)
+
+ADDED:
+- workerRef for Worker instance
+- processedData state (receives worker results)
+- workerError state (fallback error handling)
+- Worker creation in useEffect
+- postMessage to send data to worker
+- onmessage handler to receive results
+
+ARCHITECTURE PATTERN:
+---------------------
+The hook now follows a "thin client" pattern - it only:
+1. Creates and manages the worker lifecycle
+2. Forwards raw WebSocket data to worker via postMessage
+3. Receives processed results and stores in state
+4. Formats fixed arrays for display (cheap operation)
+
+All expensive operations happen in the worker thread.
+
+CODE:
+-----
+// hooks/useOrderBookState.tsx
+'use client';
+
+import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import type { OrderBookData, ProcessedLevel, Symbol } from '@/lib/types';
+import { NUM_ROWS } from '@/lib/constants';
+
+interface UseOrderBookStateProps {
+  symbol: Symbol;
+  priceGrouping: number;
+}
+
+export function useOrderBookState({
+  symbol,
+  priceGrouping
+}: UseOrderBookStateProps) {
+
+  // ONLY store worker results
+  const [processedData, setProcessedData] = useState<{
+    bids: ProcessedLevel[];
+    asks: ProcessedLevel[];
+    spread: { value: number; percentage: number } | null;
+    maxBidTotal: { asset: number; usdc: number };
+    maxAskTotal: { asset: number; usdc: number };
+  } | null>(null);
+
+  const workerRef = useRef<Worker | null>(null);
+  const currentSymbolRef = useRef<string>(symbol);
+
+  //fallback for error
+  const [workerError, setWorkError] = useState<string | null>(null);
+
+  // Create worker once
+  useEffect(() => {
+    workerRef.current = new Worker(
+      new URL('../workers/orderbook.worker.ts', import.meta.url)
+    );
+
+    workerRef.current.onmessage = (e) => {
+      if (e.data.symbol !== currentSymbolRef.current) {
+        console.warn("Ignoring stale worker result for", e.data.symbol);
+        return;
+      }
+      setProcessedData(e.data);
+    };
+
+    workerRef.current.onerror = (error) => {
+      console.error('Worker Error:', error);
+      setWorkError("Calculating engine failed. Using fallback...")
+    };
+
+    return () => {
+      workerRef.current?.terminate();
+    };
+  }, []);
+
+  // Send data to worker (NO processing here!)
+  const processOrderBook = useCallback((data: OrderBookData) => {
+    if (data.coin !== currentSymbolRef.current) return;
+
+    workerRef.current?.postMessage({
+      rawBids: data.levels[0],
+      rawAsks: data.levels[1],
+      priceGrouping,
+      symbol: currentSymbolRef.current
+    });
+  }, [priceGrouping]);
+
+  // Update symbol reference
+  useEffect(() => {
+    currentSymbolRef.current = symbol;
+    setProcessedData(null); // Clear old data
+  }, [symbol]);
+
+  // Format for display (cheap operation, OK on main thread)
+  const fixedAsks = useMemo(() => {
+    if (!processedData) return Array(NUM_ROWS).fill(null);
+
+    const rows: (ProcessedLevel | null)[] = Array(NUM_ROWS).fill(null);
+    processedData.asks.forEach((ask, i) => {
+      rows[NUM_ROWS - 1 - i] = ask;
+    });
+    return rows;
+  }, [processedData?.asks]);
+
+  const fixedBids = useMemo(() => {
+    if (!processedData) return Array(NUM_ROWS).fill(null);
+
+    const rows: (ProcessedLevel | null)[] = Array(NUM_ROWS).fill(null);
+    processedData.bids.forEach((bid, i) => {
+      rows[i] = bid;
+    });
+    return rows;
+  }, [processedData?.bids]);
+
+
+
+  // Return worker results
+  return {
+    bids: processedData?.bids || [],
+    asks: processedData?.asks || [],
+    fixedBids,
+    fixedAsks,
+    spread: processedData?.spread || null,
+    maxBidTotal: processedData?.maxBidTotal || { asset: 0, usdc: 0 },
+    maxAskTotal: processedData?.maxAskTotal || { asset: 0, usdc: 0 },
+    processOrderBook,
+    error: workerError
+  };
+}
+
+
+================================================================================
+UPDATED FILE: components/OrderBook/OrderBookTable.tsx
+================================================================================
+
+PURPOSE:
+--------
+Refactored from single-column to two-column layout with asks on left,
+bids on right. Added error handling display.
+
+KEY CHANGES:
+------------
+LAYOUT:
+- Changed from single column (asks -> spread -> bids) to two-column grid
+- Asks column on left with depth bars growing from left
+- Bids column on right with depth bars growing from right
+- Spread indicator moved to bottom
+- Header now shows 6 columns (3 for asks + 3 for bids)
+
+ERROR HANDLING:
+- New `error` prop
+- Displays error state with reload button when worker fails
+
+NEW PROP:
+- `displaySide` passed to OrderBookRow ("left-0" for asks, "right-0" for bids)
+
+CODE:
+-----
+import type { ProcessedLevel, Denomination, Symbol } from '@/lib/types';
+import { OrderBookRow } from './OrderBookRow';
+import { SpreadIndicator } from './SpreadIndicator';
+import { getDenomLabel } from '@/lib/utils';
+
+interface OrderBookTableProps {
+  fixedAsks: (ProcessedLevel | null)[];
+  fixedBids: (ProcessedLevel | null)[];
+  spread: { value: number; percentage: number } | null;
+  maxAskTotal: number;
+  maxBidTotal: number;
+  denomination: Denomination;
+  symbol: Symbol;
+  error: string | null;
+}
+
+export function OrderBookTable({
+  fixedAsks,
+  fixedBids,
+  spread,
+  maxAskTotal,
+  maxBidTotal,
+  denomination,
+  symbol,
+  error
+}: OrderBookTableProps) {
+  const denomLabel = getDenomLabel(denomination, symbol);
+
+  if(error) {
+    return (
+        <div className="min-h-screen bg-[#0a0e13] text-white p-4">
+        <div className="max-w-md mx-auto">
+          <div className="bg-red-500/10 border border-red-500 rounded-lg p-4 text-center">
+            <p className="text-red-500 font-semibold">Warning Error</p>
+            <p className="text-gray-300 text-sm mt-2">{error}</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-4 px-4 py-2 bg-red-500 rounded hover:bg-red-600"
+            >
+              Reload Page
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-[#131722] rounded-lg overflow-hidden">
+      {/* Headers - Now 6 columns for two-sided display */}
+      <div className="grid grid-cols-6 gap-2 px-4 py-2 text-xs text-gray-500 border-b border-gray-800">
+        <div className="text-left">Price</div>
+        <div className="text-center">Size ({denomLabel})</div>
+        <div className="text-right">Total ({denomLabel})</div>
+
+        <div className="text-left">Price</div>
+        <div className="text-center">Size ({denomLabel})</div>
+        <div className="text-right">Total ({denomLabel})</div>
+      </div>
+
+      {/* Two-column layout: Asks left, Bids right */}
+      <div className="grid grid-cols-2 gap-4">
+
+        {/* Asks Column - Depth bars grow from LEFT */}
+        <div className="relative">
+          {fixedAsks.map((ask, index) => {
+            const depthValue = ask
+              ? (denomination === 'asset' ? ask.total : ask.totalUsdc)
+              : 0;
+            const depthPercentage = maxAskTotal > 0 ? (depthValue / maxAskTotal) * 100 : 0;
+
+            return (
+              <OrderBookRow
+                key={`ask-row-${index}`}
+                level={ask}
+                side="ask"
+                depthPercentage={depthPercentage}
+                denomination={denomination}
+                displaySide="left-0"
+              />
+            );
+          })}
+        </div>
+
+        {/* Bids Column - Depth bars grow from RIGHT */}
+        <div className="relative">
+          {fixedBids.map((bid, index) => {
+            const depthValue = bid
+              ? (denomination === 'asset' ? bid.total : bid.totalUsdc)
+              : 0;
+            const depthPercentage = maxBidTotal > 0 ? (depthValue / maxBidTotal) * 100 : 0;
+
+            return (
+              <OrderBookRow
+                key={`bid-row-${index}`}
+                level={bid}
+                side="bid"
+                depthPercentage={depthPercentage}
+                denomination={denomination}
+                displaySide='right-0'
+              />
+            );
+          })}
+        </div>
+
+      </div>
+
+      {/* Spread - Now at bottom spanning full width */}
+      <SpreadIndicator spread={spread} />
+    </div>
+  );
+}
+
+
+================================================================================
+UPDATED FILE: components/OrderBook/OrderBookRow.tsx
+================================================================================
+
+PURPOSE:
+--------
+Added `displaySide` prop to control depth bar positioning (left or right).
+
+KEY CHANGES:
+------------
+- New `displaySide` prop: "left-0" or "right-0"
+- Depth bar absolutely positioned using displaySide class
+- Enables asks to have bars growing from left, bids from right
+
+VISUAL EFFECT:
+--------------
+Asks (left column):    Bids (right column):
+[=====>    price]      [price    <=====]
+[==>       price]      [price       <==]
+[======>   price]      [price   <======]
+
+CODE:
+-----
+import type { ProcessedLevel, Denomination } from '@/lib/types';
+import { formatSize, formatTotal } from '@/lib/utils';
+
+interface OrderBookRowProps {
+  level: ProcessedLevel | null;
+  side: 'bid' | 'ask';
+  depthPercentage: number;
+  denomination: Denomination;
+  displaySide: string;
+}
+
+export function OrderBookRow({
+  level,
+  side,
+  depthPercentage,
+  denomination,
+  displaySide
+}: OrderBookRowProps) {
+  const isBid = side === 'bid';
+  const colorClass = isBid ? 'text-green-500' : 'text-red-500';
+  const bgColorClass = isBid ? 'bg-green-500/10' : 'bg-red-500/10';
+  const flashClass = level?.isNew
+    ? (isBid ? 'animate-flash-row-green' : 'animate-flash-row-red')
+    : '';
+
+  return (
+    <div
+      className={`relative grid grid-cols-3 gap-2 px-4 py-1.5 text-sm h-8 ${flashClass}`}
+    >
+      {level ? (
+        <>
+          <div
+            className={`absolute top-[1px] bottom-[1px]
+                ${displaySide}
+                ${bgColorClass} transition-[width] duration-300 ease-out`}
+            style={{ width: `${depthPercentage}%` }}
+          />
+
+          <div className={`${colorClass} font-mono relative z-10 text-left`}>
+            {level.priceStr}
+          </div>
+
+          <div className="text-gray-300 font-mono relative z-10 text-center">
+            {formatSize(level.size, level.sizeUsdc, denomination)}
+          </div>
+
+          <div className="text-gray-500 font-mono text-xs relative z-10 text-right">
+            {formatTotal(level.total, level.totalUsdc, denomination)}
+          </div>
+        </>
+      ) : (
+        <>
+          <div
+            className={`absolute top-[1px] bottom-[1px]
+                ${displaySide}
+                ${bgColorClass}
+                transition-[width] duration-300 ease-out`}
+            style={{ width: '0%' }}
+          />
+          <div className={`${colorClass} font-mono relative z-10`}>&nbsp;</div>
+          <div className="text-gray-300 font-mono relative z-10">&nbsp;</div>
+          <div className="text-gray-500 font-mono text-xs relative z-10">&nbsp;</div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
+================================================================================
+UPDATED FILE: components/OrderBook/TradesTable.tsx
+================================================================================
+
+PURPOSE:
+--------
+Enhanced trades display with dynamic row heights based on trade size and
+full-width colored backgrounds.
+
+KEY CHANGES:
+------------
+1. DYNAMIC HEIGHTS:
+   - Added getTradeHeight() function
+   - Size >= 10000: h-50 (largest)
+   - Size >= 5000: h-20
+   - Size >= 3000: h-16
+   - Size >= 1000: h-12
+   - Size >= 50: h-10
+   - Default: h-8
+
+2. COLOR SCHEME:
+   - Full-width colored backgrounds instead of just price text
+   - Buy trades: bg-green-400
+   - Sell trades: bg-rose-400
+   - Black text on colored background for contrast
+
+VISUAL EFFECT:
+--------------
+Large trades are visually prominent with taller rows, making it easy to
+spot significant market activity at a glance.
+
+CODE:
+-----
+import type { ProcessedTrade, Denomination, Symbol } from '@/lib/types';
+import { formatSize, getDenomLabel } from '@/lib/utils';
+
+interface TradesTableProps {
+  trades: ProcessedTrade[];
+  denomination: Denomination;
+  symbol: Symbol;
+}
+
+export function TradesTable({ trades, denomination, symbol }: TradesTableProps) {
+  const denomLabel = getDenomLabel(denomination, symbol);
+
+  const getTradeHeight = (trade: ProcessedTrade): string => {
+    const size = denomination === 'asset' ? trade.size : trade.sizeUsdc;
+
+    if (size >= 10000) return 'h-50';
+    if (size >= 5000) return 'h-20';
+    if (size >= 3000) return 'h-16';
+    if (size >= 1000) return 'h-12';
+    if (size >= 50) return 'h-10';
+    return 'h-8';
+  }
+
+
+  return (
+    <div className="bg-[#131722] rounded-lg overflow-hidden">
+      {/* Headers */}
+      <div className="grid grid-cols-3 gap-2 px-4 py-2 text-xs text-gray-500 border-b border-gray-800">
+        <div className="text-left">Price</div>
+        <div className="text-center">Size ({denomLabel})</div>
+        <div className="text-right">Time</div>
+      </div>
+
+      {/* Trades List */}
+      <div className={`
+      min-h-[1000px]
+      max-h-[1000px]
+      overflow-y-auto
+      `}>
+        {trades.map((trade) => (
+
+            <div className={`${trade.side === 'buy' ? 'bg-green-400' : 'bg-rose-400' } text-black`}>
+          <div
+            key={trade.id}
+            className={`grid grid-cols-3 gap-2 px-4 py-1.5 text-sm hover:bg-[#1e222d] transition-colors
+            border
+            ${getTradeHeight(trade)}
+            `}
+          >
+            <div
+              className={`font-mono text-left
+                text-black
+              `}
+            >
+              {trade.price}
+            </div>
+
+            <div className="text-center text-black-300 font-mono">
+              {formatSize(trade.size, trade.sizeUsdc, denomination)}
+            </div>
+
+            <div className="text-right text-black-500 text-md">
+              {trade.time}
+            </div>
+          </div>
+
+
+        </div>
+
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+================================================================================
+NEW FILE: components/TradeTab/TradeTab.tsx
+================================================================================
+
+PURPOSE:
+--------
+New trading interface component for placing orders. Currently a UI skeleton
+with the following elements:
+- Position mode selector (cross)
+- Leverage selector (20x)
+- Order type selectors (Market, Limit, Pro)
+- Buy/Long and Sell/Short buttons
+- Available balance display
+- Current position display
+- Price input with "Mid" button
+- Size input with asset/USDC dropdown
+
+KEY STATE:
+----------
+- tradeAsset: Symbol | 'USDC' - Selected denomination for size input
+- price: string - Price input value
+- size: string - Size input value
+
+SYMBOL SYNC:
+------------
+When parent symbol changes, TradeTab updates tradeAsset if it was previously
+showing a coin (not USDC). This prevents stale state.
+
+CODE:
+-----
+import type { Symbol, Tab, Denomination } from '@/lib/types';
+import { useState, useEffect } from 'react';
+import { Dropdown } from '@/components/ui/Dropdown';
+
+interface TradeTableProps {
+    symbol: Symbol;
+    openMenu: string | null;
+    setOpenMenu: (menu: string | null) => void;
+}
+
+export function TradeTab({
+    symbol,
+    setOpenMenu,
+    openMenu
+}: TradeTableProps) {
+    const[tradeAssest, setTradeAsset] = useState<Symbol| 'USDC'>(symbol);
+    const [price, setPrice] = useState('');
+    const [size, setSize] = useState('');
+
+    useEffect(() => {
+        // if it was coin previously, switch to new coin otherwise show USDC, prevents stale props
+        setTradeAsset(prevState => prevState !== 'USDC' ? symbol : 'USDC');
+    },[symbol])
+
+
+
+
+    return (
+        <div className="grid grid-cols-6 bg-[#131722] text-white">
+            <div>
+                cross
+            </div>
+            <div>
+                20x
+            </div>
+            <div>
+                classic
+            </div>
+
+
+            <div>
+                Market
+            </div>
+            <div>
+                Limit
+            </div>
+            <div>
+                Pro
+            </div>
+
+            <div className="col-span-6 flex justify-center">
+                <button className="bg-green-500 min-w-[11rem] min-h-[2.75rem] rounded-xl cursor-pointer">
+                    Buy/Long
+                </button>
+
+                <button className="bg-red-500 min-w-[11rem] min-h-[2.75rem] rounded-xl
+                cursor-pointer">
+                    Sell/Short
+                </button>
+            </div>
+
+            <div className="col-span-6 flex flex-col gap-1">
+                <div className="flex justify-between ">
+                    <div>
+                        Avalaible to Trade
+                    </div>
+                    <div>
+                        3000
+                    </div>
+                </div>
+
+                <div className="flex justify-between">
+                    <div>
+                        Current Position
+                    </div>
+                    <div>
+                        3000
+                    </div>
+                </div>
+            </div>
+
+            <div className="col-span-6 flex flex-col">
+                <div className="relative w-full
+                bg-transparent border rounded-md flex text-white justify-between p-2">
+                    <input
+                        className="w-full "
+                        value={price}
+                        onChange={(e) => { setPrice(e.target.value)}}
+                        placeholder="Price (USDC)"
+                    />
+                    <button>
+                        Mid
+                    </button>
+
+                </div>
+
+                <div className="relative w-full
+                bg-transparent border rounded-md flex text-white justify-between p-2">
+                    <input
+                        className="w-full "
+                        value={price}
+                        onChange={(e) => { setSize(e.target.value)}}
+                        placeholder="Size"
+                    />
+                    <Dropdown
+                        value={tradeAssest}
+                        onChange={(val) => {
+                            setTradeAsset(val)
+                            setOpenMenu(null)
+                        }}
+                        options={[
+                            { label: symbol, value: symbol},
+                            { label: 'USDC', value: 'USDC'}
+
+                        ]}
+                        isOpen={openMenu === 'tradeAsset'}
+                        onToggle={() => {
+                            setOpenMenu(openMenu === 'tradeAsset' ? null : 'tradeAsset')
+                        }}
+                    />
+
+                </div>
+            </div>
+
+        </div>
+    )
+}
+
+
+================================================================================
+UPDATED FILE: app/page.tsx
+================================================================================
+
+PURPOSE:
+--------
+Main page updated to integrate new components and pass error state.
+
+KEY CHANGES:
+------------
+1. IMPORTS:
+   - Added TradeTab import
+
+2. DESTRUCTURING:
+   - Added `error` from useOrderBookState
+
+3. LAYOUT:
+   - Changed max-width from max-w-md to max-w-lg (wider container)
+
+4. PROPS:
+   - Passing `error` prop to OrderBookTable
+
+5. NEW COMPONENT:
+   - Added TradeTab below the order book/trades table
+
+CODE:
+-----
+'use client';
+
+import { useState, useEffect } from 'react';
+import { OrderBookHeader } from '@/components/OrderBook/OrderBookHeader';
+import { OrderBookTable } from '@/components/OrderBook/OrderBookTable';
+import { TradesTable } from '@/components/OrderBook/TradesTable';
+import { TradeTab } from '@/components/TradeTab/TradeTab';
+
+
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { useOrderBookState } from '@/hooks/useOrderBookState';
+import { useTrades } from '@/hooks/useTrades';
+import type { Symbol, Tab, Denomination } from '@/lib/types';
+
+export default function OrderBook() {
+  const [symbol, setSymbol] = useState<Symbol>('BTC');
+  const [priceGrouping, setPriceGrouping] = useState<number>(1);
+  const [activeTab, setActiveTab] = useState<Tab>('orderbook');
+  const [denomination, setDenomination] = useState<Denomination>('asset');
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+
+  // Custom hooks
+  const {
+    fixedBids,
+    fixedAsks,
+    spread,
+    maxBidTotal,
+    maxAskTotal,
+    processOrderBook,
+    error
+  } = useOrderBookState({ symbol, priceGrouping });
+
+  const { trades, processTrades, resetTrades } = useTrades({ symbol });
+
+  const { isConnected } = useWebSocket({
+    symbol,
+    onOrderBookUpdate: processOrderBook,
+    onTradesUpdate: processTrades
+  });
+
+  // Reset trades when symbol changes
+  useEffect(() => {
+    resetTrades();
+    setPriceGrouping(symbol === 'BTC' ? 1 : 0.1);
+  }, [symbol, resetTrades]);
+
+  return (
+    <div className="min-h-screen bg-[#0a0e13] text-white p-4">
+      <div className="max-w-lg mx-auto">
+        <OrderBookHeader
+          symbol={symbol}
+          setSymbol={setSymbol}
+          priceGrouping={priceGrouping}
+          setPriceGrouping={setPriceGrouping}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          denomination={denomination}
+          setDenomination={setDenomination}
+          isConnected={isConnected}
+          openMenu={openMenu}
+          setOpenMenu={setOpenMenu}
+        />
+
+        {activeTab === 'orderbook' ? (
+          <OrderBookTable
+            fixedAsks={fixedAsks}
+            fixedBids={fixedBids}
+            spread={spread}
+            maxAskTotal={denomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
+            maxBidTotal={denomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
+            denomination={denomination}
+            symbol={symbol}
+            error={error}
+          />
+        ) : (
+          <TradesTable
+            trades={trades}
+            denomination={denomination}
+            symbol={symbol}
+          />
+        )}
+
+        <TradeTab
+          symbol={symbol}
+          openMenu={openMenu}
+          setOpenMenu={setOpenMenu}
+        />
+
+        {/* Footer */}
+        <div className="mt-4 text-center text-xs text-gray-600">
+          {isConnected ? (
+            <span className="text-green-500">Live</span>
+          ) : (
+            <span className="text-red-500">Disconnected</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+================================================================================
+UPDATED FILE: components/ui/Dropdown.tsx
+================================================================================
+
+MINOR CHANGE:
+-------------
+Exported DropdownProps interface for use in other components.
+
+CHANGE:
+-------
+- interface DropdownProps<T>
++ export interface DropdownProps<T>
+
+
+================================================================================
+SUMMARY OF CHANGES
+================================================================================
+
++---------------------------+-------------------------------------------+
+| Change                    | Impact                                    |
++---------------------------+-------------------------------------------+
+| Web Worker                | Performance: UI no longer blocks during   |
+|                           | heavy orderbook processing                |
++---------------------------+-------------------------------------------+
+| Two-Column Layout         | UX: Asks and bids side-by-side, matching  |
+|                           | professional trading interfaces           |
++---------------------------+-------------------------------------------+
+| Dynamic Trade Heights     | Visual: Large trades immediately visible  |
+|                           | with bigger row heights                   |
++---------------------------+-------------------------------------------+
+| TradeTab Component        | Feature: Foundation for order placement   |
+|                           | UI (currently skeleton)                   |
++---------------------------+-------------------------------------------+
+| Error Handling            | Robustness: Graceful degradation when     |
+|                           | worker fails, with reload option          |
++---------------------------+-------------------------------------------+
+| DisplaySide Prop          | Flexibility: Depth bars can grow from     |
+|                           | either left or right side                 |
++---------------------------+-------------------------------------------+
+
+
+================================================================================
+FILE STRUCTURE AFTER UPDATES
+================================================================================
+
+hyperliquid_widget/
+├── app/
+│   └── page.tsx                    [UPDATED - TradeTab, error prop, max-w-lg]
+├── components/
+│   ├── ui/
+│   │   ├── Dropdown.tsx            [UPDATED - exported interface]
+│   │   └── TabSelector.tsx
+│   ├── OrderBook/
+│   │   ├── OrderBookHeader.tsx
+│   │   ├── OrderBookTable.tsx      [UPDATED - 2-column layout, error UI]
+│   │   ├── OrderBookRow.tsx        [UPDATED - displaySide prop]
+│   │   ├── TradesTable.tsx         [UPDATED - dynamic heights, colors]
+│   │   └── SpreadIndicator.tsx
+│   └── TradeTab/
+│       └── TradeTab.tsx            [NEW - trading interface]
+├── hooks/
+│   ├── useWebSocket.tsx
+│   ├── useOrderBookState.tsx       [UPDATED - Web Worker integration]
+│   └── useTrades.tsx
+├── workers/
+│   └── orderbook.worker.ts         [NEW - off-thread processing]
+└── lib/
+    ├── types.ts
+    ├── constants.ts
+    ├── utils.ts
+    └── orderbook.ts
+
+
+================================================================================
+DATA FLOW AFTER UPDATES
+================================================================================
+
+WebSocket (wss://api.hyperliquid.xyz/ws)
+    |
+    v
+useWebSocket Hook
+    |
+    +-----> onOrderBookUpdate()
+    |           |
+    |           v
+    |       useOrderBookState.processOrderBook()
+    |           |
+    |           v
+    |       Worker.postMessage({ rawBids, rawAsks, priceGrouping, symbol })
+    |           |
+    |           v (OFF MAIN THREAD)
+    |       orderbook.worker.ts
+    |           |-- aggregateLevels(bids)
+    |           |-- aggregateLevels(asks)
+    |           |-- Calculate spread
+    |           |-- Calculate maxTotals
+    |           |-- Memory cleanup (prune known prices)
+    |           |
+    |           v
+    |       Worker.postMessage(results)
+    |           |
+    |           v (BACK TO MAIN THREAD)
+    |       setProcessedData(results)
+    |           |
+    |           v
+    |       React re-render -> OrderBookTable
+    |
+    +-----> onTradesUpdate()
+            |
+            v
+        useTrades.processTrades()
+            |
+            v
+        setTrades() -> React re-render -> TradesTable

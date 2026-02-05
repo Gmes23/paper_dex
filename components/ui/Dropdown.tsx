@@ -3,11 +3,12 @@
 import { useEffect, useRef } from 'react';
 
 interface DropdownOption<T> {
+  key?: string;
   label: string;
   value: T;
 }
 
-interface DropdownProps<T> {
+export interface DropdownProps<T> {
   value: T;
   options: DropdownOption<T>[];
   onChange: (value: T) => void;
@@ -63,7 +64,7 @@ export function Dropdown<T extends string | number>({
 
             return (
               <button
-                key={String(opt.value)}
+                key={opt.key ? opt.key : String(opt.value)}
                 onClick={(e) => {
                   e.stopPropagation();
                   onChange(opt.value);

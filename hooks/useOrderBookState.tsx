@@ -1,149 +1,149 @@
+// hooks/useOrderBookState.tsx
 'use client';
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
-import type { OrderBookLevel, OrderBookData, ProcessedLevel, Symbol } from '@/lib/types';
-import { aggregateLevels } from '@/lib/orderbook';
 import { NUM_ROWS } from '@/lib/constants';
+import type { OrderBookData, ProcessedLevel, Symbol } from '@/lib/types';
 
 interface UseOrderBookStateProps {
   symbol: Symbol;
   priceGrouping: number;
 }
 
-export function useOrderBookState({ symbol, priceGrouping }: UseOrderBookStateProps) {
-  const [rawBids, setRawBids] = useState<OrderBookLevel[]>([]);
-  const [rawAsks, setRawAsks] = useState<OrderBookLevel[]>([]);
-  
-  const knownBidPricesRef = useRef<Set<number>>(new Set());
-  const knownAskPricesRef = useRef<Set<number>>(new Set());
+interface ProcessedDataProps {
+  bids: ProcessedLevel[];
+  asks: ProcessedLevel[];
+  bestBid: number;
+  bestAsk: number;
+  spread: { value: number; percentage: number } | null;
+  maxBidTotal: { asset: number; usdc: number };
+  maxAskTotal: { asset: number; usdc: number };
+}
+export function useOrderBookState({
+  symbol,
+  priceGrouping
+}: UseOrderBookStateProps) {
 
-  const skipFlashRef = useRef<boolean>(true);
+  // ✅ ONLY store worker results
+  const [processedData, setProcessedData] = useState< ProcessedDataProps| null>(null);
+
+  const workerRef = useRef<Worker | null>(null);
   const currentSymbolRef = useRef<string>(symbol);
 
+  //fallback for error 
+  const [workerError, setWorkError] = useState<string | null>(null);
 
-  // Ref storing current symbol to prevent processing stale WebSocket messages after symbol changes
+  //track if worker is in progress
+  const isProcessingRef = useRef(false);
+
+  //store the most recent data while worker is busy
+  const pendingDataRef = useRef<OrderBookData | null>(null);
+  const priceGroupingRef = useRef(priceGrouping);
+
   useEffect(() => {
-    currentSymbolRef.current = symbol;
-    setRawBids([]);
-    setRawAsks([]);
-    knownBidPricesRef.current = new Set();
-    knownAskPricesRef.current = new Set();
-    skipFlashRef.current = true;
-  }, [symbol]);
-
-
-  // Resets all state and refs to clear old symbols data
-  useEffect(() => {
-    knownBidPricesRef.current = new Set();
-    knownAskPricesRef.current = new Set();
-    skipFlashRef.current = true;
+    priceGroupingRef.current = priceGrouping;
   }, [priceGrouping]);
 
+
+  // ✅ Create worker once
+  useEffect(() => {
+    workerRef.current = new Worker(
+      new URL('../workers/orderbook.worker.ts', import.meta.url)
+    );
+
+    workerRef.current.onmessage = (e) => {
+      if (e.data.symbol !== currentSymbolRef.current) {
+        console.warn("Ignoring stale worker result for", e.data.symbol);
+        return;
+      }
+      setProcessedData(e.data);
+      isProcessingRef.current = false;
+
+      if(pendingDataRef.current) {
+        const dataToProcess = pendingDataRef.current;
+
+        //why process it now?
+        isProcessingRef.current = true;
+        workerRef.current?.postMessage({
+          rawBids: dataToProcess.levels[0],
+          rawAsks: dataToProcess.levels[1],
+          priceGrouping: priceGroupingRef.current,
+          symbol: currentSymbolRef.current
+        })
+      }
+    };
+
+    workerRef.current.onerror = (error) => {
+      console.error('Worker Error:', error);
+      setWorkError("Calculating engine failed. Using fallback...")
+    };
+
+    return () => {
+      workerRef.current?.terminate();
+    };
+  }, []);
+
+  // ✅ Send data to worker (NO processing here!)
   const processOrderBook = useCallback((data: OrderBookData) => {
-    if (data.coin !== currentSymbolRef.current) {
+    if (data.coin !== currentSymbolRef.current) return;
+
+    if(isProcessingRef.current) {
+      pendingDataRef.current = data;
       return;
     }
 
-    const [bids, asks] = data.levels;
-    setRawBids(bids);
-    setRawAsks(asks);
-  }, []);
+    isProcessingRef.current = true;
+    workerRef.current?.postMessage({
+      rawBids: data.levels[0],
+      rawAsks: data.levels[1],
+      priceGrouping: priceGroupingRef.current,
+      symbol: currentSymbolRef.current
+    });
+  }, [priceGrouping]);
 
-  const { bids, asks, spread, maxBidTotal, maxAskTotal } = useMemo(() => {
-    const shouldSkipFlash = skipFlashRef.current;
-    
-    const bidsResult = aggregateLevels(
-      rawBids, 
-      priceGrouping, 
-      true,
-      knownBidPricesRef.current,
-      shouldSkipFlash
-    );
-    
-    const asksResult = aggregateLevels(
-      rawAsks, 
-      priceGrouping, 
-      false,
-      knownAskPricesRef.current,
-      shouldSkipFlash
-    );
-    
-    // Update the refs with new known prices
-    knownBidPricesRef.current = bidsResult.newKnownPrices;
-    knownAskPricesRef.current = asksResult.newKnownPrices;
+  // ✅ Update symbol reference
+  useEffect(() => {
+    currentSymbolRef.current = symbol;
+    setProcessedData(null); // Clear old data
+    pendingDataRef.current = null;
+    isProcessingRef.current = false;
+  }, [symbol]);
 
-
-    // Update refs with newly seen prices for next renders flash detection.
-    const aggregatedBids = bidsResult.levels.slice(0, NUM_ROWS);
-    const aggregatedAsks = asksResult.levels.slice(0, NUM_ROWS);
-    
-    if (rawBids.length > 0 || rawAsks.length > 0) {
-      skipFlashRef.current = false;
-    }
-    
-    const displayAsks = [...aggregatedAsks].reverse();
-    
-    let spreadData = null;
-    if (aggregatedBids.length > 0 && aggregatedAsks.length > 0) {
-      const bestBid = aggregatedBids[0].price;
-      const bestAsk = aggregatedAsks[0].price;
-      const spreadValue = bestAsk - bestBid;
-      const spreadPercentage = (spreadValue / bestAsk) * 100;
-      spreadData = { value: spreadValue, percentage: spreadPercentage };
-    }
-    
-    // Calculate bid/ask spread
-    const maxBidTotalAsset = aggregatedBids.length > 0 
-      ? Math.max(...aggregatedBids.map(b => b.total)) 
-      : 0;
-    const maxBidTotalUsdc = aggregatedBids.length > 0 
-      ? Math.max(...aggregatedBids.map(b => b.totalUsdc)) 
-      : 0;
-
-
-
-    // Finding maximum cumulative total on bid side (in both asset units and USDC value) so wecan used for depth visualization bars. 
-    const maxAskTotalAsset = displayAsks.length > 0 
-      ? Math.max(...displayAsks.map(a => a.total)) 
-      : 0;
-    const maxAskTotalUsdc = displayAsks.length > 0 
-      ? Math.max(...displayAsks.map(a => a.totalUsdc)) 
-      : 0;
-    
-    return { 
-      bids: aggregatedBids, 
-      asks: displayAsks, 
-      spread: spreadData,
-      maxBidTotal: { asset: maxBidTotalAsset, usdc: maxBidTotalUsdc },
-      maxAskTotal: { asset: maxAskTotalAsset, usdc: maxAskTotalUsdc }
-    };
-  }, [rawBids, rawAsks, priceGrouping]);
-
-  // Creating the rows for the bid ask so its always the same number as NUM_ROWS if there are less than NUM_ROWs we leave them empty, rows[NUM_ROWS - 1 - i] = ask; is just reversing the order of the asks so the lowest ask price at the bottom near the spread
+  // ✅ Format for display (cheap operation, OK on main thread)
   const fixedAsks = useMemo(() => {
+    if (!processedData) return Array(NUM_ROWS).fill(null);
+
     const rows: (ProcessedLevel | null)[] = Array(NUM_ROWS).fill(null);
-    asks.forEach((ask, i) => {
+    processedData.asks.forEach((ask, i) => {
       rows[NUM_ROWS - 1 - i] = ask;
     });
     return rows;
-  }, [asks]);
+  }, [processedData?.asks]);
 
   const fixedBids = useMemo(() => {
+    if (!processedData) return Array(NUM_ROWS).fill(null);
+
     const rows: (ProcessedLevel | null)[] = Array(NUM_ROWS).fill(null);
-    bids.forEach((bid, i) => {
-      rows[i] = bid;
+    processedData.bids.forEach((bid, i) => {
+      rows[NUM_ROWS - 1 - i] = bid;
     });
     return rows;
-  }, [bids]);
+  }, [processedData?.bids]);
 
+
+
+  // ✅ Return worker results
   return {
-    bids,
-    asks,
+    bids: processedData?.bids || [],
+    asks: processedData?.asks || [],
     fixedBids,
     fixedAsks,
-    spread,
-    maxBidTotal,
-    maxAskTotal,
-    processOrderBook
+    bestBid: processedData?.bestBid || null,
+    bestAsk: processedData?.bestAsk || null,
+    spread: processedData?.spread || null,
+    maxBidTotal: processedData?.maxBidTotal || { asset: 0, usdc: 0 },
+    maxAskTotal: processedData?.maxAskTotal || { asset: 0, usdc: 0 },
+    processOrderBook,
+    error: workerError
   };
 }

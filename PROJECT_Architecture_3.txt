@@ -1,0 +1,1416 @@
+================================================================================
+HYPERLIQUID ORDER BOOK WIDGET - UPDATE 3 DOCUMENTATION
+================================================================================
+
+This document covers the latest architectural changes and new features.
+Major updates include:
+
+1. Position Management System (New Feature)
+2. Trade Form State Lifted to Parent (Architecture Change)
+3. Mark Price Calculation with Throttling (New Feature)
+4. Real-time PNL Calculation (New Feature)
+5. Click-to-Fill Price from OrderBook (UX Enhancement)
+6. Two-Column Page Layout (UI Restructure)
+7. Worker Message Queuing (Performance Optimization)
+8. Best Bid/Ask Exposed from Worker (Data Enhancement)
+
+================================================================================
+ARCHITECTURE CHANGES OVERVIEW
+================================================================================
+
+BEFORE (Update 2):
+------------------
++------------------+
+|   OrderBook      |
+|   + TradeTab     |
++------------------+
+
+- TradeTab managed its own local state
+- No position tracking
+- No mark price calculation
+- Single column layout
+
+
+AFTER (Update 3):
+-----------------
++----------------------------------+------------------+
+|         PositionsTable           |   OrderBook      |
+|  - User positions list           |   + TradeTab     |
+|  - Real-time PNL                 |                  |
+|  - Mark price display            |                  |
++----------------------------------+------------------+
+
+- TradeForm state lifted to page.tsx (single source of truth)
+- Position management with add functionality
+- Mark price calculated from bestBid/bestAsk (throttled 500ms)
+- Real-time PNL calculation for open positions
+- Click orderbook row to fill price input
+- Two-column responsive layout
+
+
+DATA FLOW DIAGRAM:
+------------------
+
+WebSocket
+    |
+    v
+useOrderBookState (Worker)
+    |
+    +---> bestBid, bestAsk (NEW)
+    |           |
+    |           v
+    |     Mark Price Calculation (500ms throttle)
+    |           |
+    |           +---> setMarkPrice()
+    |           |
+    |           +---> PNL Calculation for positions
+    |
+    +---> fixedBids, fixedAsks
+              |
+              v
+        OrderBookTable
+              |
+              +---> onClick(price) ---> callbackTradeForm({inputPrice})
+                                              |
+                                              v
+                                        TradeTab (controlled)
+                                              |
+                                              +---> onPositionSubmit()
+                                                          |
+                                                          v
+                                                    addPosition()
+                                                          |
+                                                          v
+                                                  PositionsTable
+
+
+================================================================================
+NEW TYPES: lib/types.ts
+================================================================================
+
+PURPOSE:
+--------
+Added new interfaces for trade form state management and position tracking.
+
+NEW INTERFACES:
+---------------
+- TradeFormState: Form state for the trading panel
+- Position: Represents a user's open position
+
+CODE:
+-----
+export interface OrderBookLevel {
+    px: string;
+    sz: string;
+    n: number;
+  }
+
+  export interface OrderBookData {
+    coin: string;
+    levels: [OrderBookLevel[], OrderBookLevel[]];
+    time: number;
+  }
+
+  export interface ProcessedLevel {
+    price: number;
+    size: number;
+    sizeUsdc: number;
+    total: number;
+    totalUsdc: number;
+    priceStr: string;
+    isNew: boolean;
+  }
+
+  export interface TradeData {
+    coin: string;
+    side: string;
+    px: string;
+    sz: string;
+    time: number;
+    hash: string;
+  }
+
+  export interface ProcessedTrade {
+    price: string;
+    size: number;
+    sizeUsdc: number;
+    side: 'buy' | 'sell';
+    time: string;
+    id: string;
+  }
+
+  export interface TradeFormState {
+    tradeAsset: Symbol | 'USDC',
+    inputPrice: string;
+    size: string;
+    activeTradeTab: 'Long' | 'Short';
+    markPrice: number | null;
+    PNL: number | null;
+  }
+
+  export interface Position {
+    id: string;
+    date: number;
+    tradeAsset: Symbol | 'USDC',
+    inputPrice: string;
+    size: string;
+    activeTradeTab: 'Long' | 'Short';
+  }
+
+  export type Symbol = 'BTC' | 'ETH';
+  export type Tab = 'orderbook' | 'trades';
+  export type Denomination = 'asset' | 'usdc';
+
+
+================================================================================
+UPDATED: workers/orderbook.worker.ts
+================================================================================
+
+PURPOSE:
+--------
+Now exports bestBid and bestAsk values for mark price calculation.
+
+KEY CHANGES:
+------------
+- Added bestBid and bestAsk variables
+- These are extracted from aggregated results
+- Sent back to main thread via postMessage
+
+CODE:
+-----
+// workers/orderbook.worker.ts
+import { aggregateLevels } from '../lib/orderbook';
+import { NUM_ROWS } from '../lib/constants';
+
+// Maintain flash animation state INSIDE the worker
+let knownBidPrices = new Set<number>();
+let knownAskPrices = new Set<number>();
+let skipFlash = true;
+let currentSymbol: string | null = null;
+let currentGrouping: number | null = null;
+
+self.onmessage = (event) => {
+  const { rawBids, rawAsks, priceGrouping, symbol } = event.data;
+
+  // Reset known prices if symbol or grouping changed
+  if (symbol !== currentSymbol || priceGrouping !== currentGrouping) {
+    knownBidPrices = new Set();
+    knownAskPrices = new Set();
+    skipFlash = true;
+    currentSymbol = symbol;
+    currentGrouping = priceGrouping;
+  }
+
+  // Aggregate with flash detection
+  const bidsResult = aggregateLevels(
+    rawBids,
+    priceGrouping,
+    true,
+    knownBidPrices,  // <- Persistent state in worker
+    skipFlash
+  );
+
+  const asksResult = aggregateLevels(
+    rawAsks,
+    priceGrouping,
+    false,
+    knownAskPrices,  // <- Persistent state in worker
+    skipFlash
+  );
+
+  // Update known prices for next time
+  knownBidPrices = bidsResult.newKnownPrices;
+  knownAskPrices = asksResult.newKnownPrices;
+
+  if(knownAskPrices.size > 1000 && knownBidPrices.size > 1000) {
+    const currentOrderBookPrices = new Set([...rawBids, ...rawAsks].map(object => parseFloat(object.px)));
+
+    knownAskPrices = new Set([...knownAskPrices].filter(p => currentOrderBookPrices.has(p)))
+
+    knownBidPrices = new Set([...knownBidPrices].filter((bidprice) => currentOrderBookPrices.has(bidprice)))
+  }
+
+  skipFlash = false;
+
+  // Process results
+  const aggregatedBids = bidsResult.levels.slice(0, NUM_ROWS);
+  const aggregatedAsks = asksResult.levels.slice(0, NUM_ROWS);
+  const displayAsks = [...aggregatedAsks].reverse();
+
+  // Calculate spread AND extract best bid/ask
+  let spread = null;
+  let bestBid = null;
+  let bestAsk = null;
+  if (aggregatedBids.length > 0 && aggregatedAsks.length > 0) {
+    bestBid = aggregatedBids[0].price;
+    bestAsk = aggregatedAsks[0].price;
+    const spreadValue = bestAsk - bestBid;
+    const spreadPercentage = (spreadValue / bestAsk) * 100;
+    spread = { value: spreadValue, percentage: spreadPercentage };
+  }
+
+  // Calculate max totals
+  const maxBidTotalAsset = aggregatedBids.length > 0
+    ? Math.max(...aggregatedBids.map(b => b.total))
+    : 0;
+  const maxBidTotalUsdc = aggregatedBids.length > 0
+    ? Math.max(...aggregatedBids.map(b => b.totalUsdc))
+    : 0;
+
+  const maxAskTotalAsset = displayAsks.length > 0
+    ? Math.max(...displayAsks.map(a => a.total))
+    : 0;
+  const maxAskTotalUsdc = displayAsks.length > 0
+    ? Math.max(...displayAsks.map(a => a.totalUsdc))
+    : 0;
+
+  // Send complete results back (now includes bestBid/bestAsk)
+  self.postMessage({
+    bids: aggregatedBids,
+    asks: displayAsks,
+    bestBid,
+    bestAsk,
+    spread,
+    maxBidTotal: {
+      asset: maxBidTotalAsset,
+      usdc: maxBidTotalUsdc
+    },
+    maxAskTotal: {
+      asset: maxAskTotalAsset,
+      usdc: maxAskTotalUsdc
+    },
+    symbol  // Echo back for verification
+  });
+};
+
+export {};
+
+
+================================================================================
+UPDATED: hooks/useOrderBookState.tsx
+================================================================================
+
+PURPOSE:
+--------
+Enhanced with message queuing to prevent dropped updates and now exposes
+bestBid/bestAsk for mark price calculation.
+
+KEY CHANGES:
+------------
+1. MESSAGE QUEUING:
+   - isProcessingRef tracks if worker is busy
+   - pendingDataRef stores latest data while worker processes
+   - When worker finishes, checks for pending data and processes it
+   - Prevents data loss during high-frequency updates
+
+2. BEST BID/ASK:
+   - ProcessedDataProps interface now includes bestBid, bestAsk
+   - These values are returned from the hook
+
+3. PRICE GROUPING REF:
+   - priceGroupingRef ensures latest grouping is used in queued messages
+
+CODE:
+-----
+// hooks/useOrderBookState.tsx
+'use client';
+
+import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import { NUM_ROWS } from '@/lib/constants';
+import type { OrderBookData, ProcessedLevel, Symbol } from '@/lib/types';
+
+interface UseOrderBookStateProps {
+  symbol: Symbol;
+  priceGrouping: number;
+}
+
+interface ProcessedDataProps {
+  bids: ProcessedLevel[];
+  asks: ProcessedLevel[];
+  bestBid: number;
+  bestAsk: number;
+  spread: { value: number; percentage: number } | null;
+  maxBidTotal: { asset: number; usdc: number };
+  maxAskTotal: { asset: number; usdc: number };
+}
+export function useOrderBookState({
+  symbol,
+  priceGrouping
+}: UseOrderBookStateProps) {
+
+  // ONLY store worker results
+  const [processedData, setProcessedData] = useState< ProcessedDataProps| null>(null);
+
+  const workerRef = useRef<Worker | null>(null);
+  const currentSymbolRef = useRef<string>(symbol);
+
+  //fallback for error
+  const [workerError, setWorkError] = useState<string | null>(null);
+
+  //track if worker is in progress
+  const isProcessingRef = useRef(false);
+
+  //store the most recent data while worker is busy
+  const pendingDataRef = useRef<OrderBookData | null>(null);
+  const priceGroupingRef = useRef(priceGrouping);
+
+  useEffect(() => {
+    priceGroupingRef.current = priceGrouping;
+  }, [priceGrouping]);
+
+
+  // Create worker once
+  useEffect(() => {
+    workerRef.current = new Worker(
+      new URL('../workers/orderbook.worker.ts', import.meta.url)
+    );
+
+    workerRef.current.onmessage = (e) => {
+      if (e.data.symbol !== currentSymbolRef.current) {
+        console.warn("Ignoring stale worker result for", e.data.symbol);
+        return;
+      }
+      setProcessedData(e.data);
+      isProcessingRef.current = false;
+
+      // Check for pending data and process it
+      if(pendingDataRef.current) {
+        const dataToProcess = pendingDataRef.current;
+
+        isProcessingRef.current = true;
+        workerRef.current?.postMessage({
+          rawBids: dataToProcess.levels[0],
+          rawAsks: dataToProcess.levels[1],
+          priceGrouping: priceGroupingRef.current,
+          symbol: currentSymbolRef.current
+        })
+      }
+    };
+
+    workerRef.current.onerror = (error) => {
+      console.error('Worker Error:', error);
+      setWorkError("Calculating engine failed. Using fallback...")
+    };
+
+    return () => {
+      workerRef.current?.terminate();
+    };
+  }, []);
+
+  // Send data to worker (with queuing)
+  const processOrderBook = useCallback((data: OrderBookData) => {
+    if (data.coin !== currentSymbolRef.current) return;
+
+    // If worker is busy, queue this data
+    if(isProcessingRef.current) {
+      pendingDataRef.current = data;
+      return;
+    }
+
+    isProcessingRef.current = true;
+    workerRef.current?.postMessage({
+      rawBids: data.levels[0],
+      rawAsks: data.levels[1],
+      priceGrouping: priceGroupingRef.current,
+      symbol: currentSymbolRef.current
+    });
+  }, [priceGrouping]);
+
+  // Update symbol reference
+  useEffect(() => {
+    currentSymbolRef.current = symbol;
+    setProcessedData(null); // Clear old data
+    pendingDataRef.current = null;
+    isProcessingRef.current = false;
+  }, [symbol]);
+
+  // Format for display (cheap operation, OK on main thread)
+  const fixedAsks = useMemo(() => {
+    if (!processedData) return Array(NUM_ROWS).fill(null);
+
+    const rows: (ProcessedLevel | null)[] = Array(NUM_ROWS).fill(null);
+    processedData.asks.forEach((ask, i) => {
+      rows[NUM_ROWS - 1 - i] = ask;
+    });
+    return rows;
+  }, [processedData?.asks]);
+
+  const fixedBids = useMemo(() => {
+    if (!processedData) return Array(NUM_ROWS).fill(null);
+
+    const rows: (ProcessedLevel | null)[] = Array(NUM_ROWS).fill(null);
+    processedData.bids.forEach((bid, i) => {
+      rows[NUM_ROWS - 1 - i] = bid;
+    });
+    return rows;
+  }, [processedData?.bids]);
+
+
+
+  // Return worker results (now includes bestBid/bestAsk)
+  return {
+    bids: processedData?.bids || [],
+    asks: processedData?.asks || [],
+    fixedBids,
+    fixedAsks,
+    bestBid: processedData?.bestBid || null,
+    bestAsk: processedData?.bestAsk || null,
+    spread: processedData?.spread || null,
+    maxBidTotal: processedData?.maxBidTotal || { asset: 0, usdc: 0 },
+    maxAskTotal: processedData?.maxAskTotal || { asset: 0, usdc: 0 },
+    processOrderBook,
+    error: workerError
+  };
+}
+
+
+================================================================================
+NEW COMPONENT: components/PositionsTable/PositionsTable.tsx
+================================================================================
+
+PURPOSE:
+--------
+Displays user's open positions with real-time PNL calculation.
+
+KEY FEATURES:
+-------------
+1. TAB NAVIGATION:
+   - Balances, Positions, Open Orders, Trade History, Order History
+   - Currently shows Positions view
+
+2. COLUMN HEADERS:
+   - Coin, Size, Position Value, Entry Price, Mark Price, PNL, Liq Price
+
+3. POSITION ROWS:
+   - Color-coded side indicator (green=Long, red=Short)
+   - Real-time PNL calculation: (markPrice - entryPrice) * size * direction
+   - PNL color: green for profit, red for loss
+   - Formatted currency display
+
+4. EMPTY STATE:
+   - Shows "No open positions" when list is empty
+
+PNL CALCULATION LOGIC:
+----------------------
+direction = position.activeTradeTab === "Long" ? 1 : -1
+pnl = (markPrice - entryPrice) * size * direction
+
+For Long: profit when mark > entry
+For Short: profit when mark < entry
+
+CODE:
+-----
+import { useState } from 'react';
+import type { Position } from '@/lib/types';
+
+interface PositionsTableProps {
+    userPositions: Position[];
+    markPrice: number | null;
+    positionsPNL: (number | string)[] | null;
+}
+
+
+export function PositionsTable({
+    userPositions,
+    markPrice,
+    positionsPNL
+}: PositionsTableProps) {
+
+    const positionsTabs = [
+        {
+            key: 'Balances' + 1,
+            name: 'Balances'
+        },
+        {
+            key: 'Positions' + 1, name:
+                'Positions'
+        }, {
+            key: 'Open Orders' + 1,
+            name: 'Open Orders'
+        }, {
+            key: 'Trade History' + 1,
+            name: 'Trade History'
+        }, {
+            key: 'Order History',
+            name: 'Order History'
+        }
+    ]
+
+    const currentTab = [
+        { key: 'Positions' + 2, label: 'Coin' },
+        {
+            key: 'Positions' + 3, label: 'Size'
+        }, {
+            key: 'Positions' + 4,
+            label: 'Position Value'
+        }, {
+            key: 'Entry Price',
+            label: 'Entry Price'
+        }, {
+            key: 'Mark Price',
+            label: 'Mark Price'
+        }, {
+            key: 'PNL',
+            label: 'PNL (ROE%)'
+        }, {
+            key: 'lid price',
+            label: 'liq price'
+        }
+    ];
+
+
+
+    return (
+        <div className="flex flex-col min-w-full p-3 bg-tan-500 text-white">
+            <div className="flex gap-4">
+                {positionsTabs.map(item => (
+
+                    <div key={item.key}
+                        className="cursor-pointer
+                    hover:text-teal-400
+                    hover:underline
+                    hover:decoration-teal-400">
+                        {item.name}
+                    </div>))}
+            </div>
+
+
+            <div className="flex gap-9">
+                {currentTab.map(item => (
+                    <div
+                        key={item.key}
+                    >
+                        {item.label}
+                    </div>
+                ))}
+            </div>
+
+            {/* Positions */}
+            {userPositions && userPositions.length > 0 ? (
+                <div className="mt-4 flex flex-col gap-3">
+                    {userPositions.map((position: Position) => {
+                        const entry = Number(position.inputPrice);
+                        const size = Number(position.size);
+
+                        // guard against empty inputs / NaN
+                        const hasNumbers = Number.isFinite(entry) && Number.isFinite(size);
+
+                        const mark = markPrice; // number | null
+
+                        const dir = position.activeTradeTab === "Long" ? 1 : -1;
+
+                        const pnlSigned =
+                            mark != null && hasNumbers
+                                ? (mark - entry) * size * dir
+                                : null;
+
+                        const pnlIsProfit = pnlSigned != null && pnlSigned > 0;
+                        const pnlIsLoss = pnlSigned != null && pnlSigned < 0;
+
+                        const pnlText =
+                            pnlSigned == null
+                                ? "-"
+                                : `${pnlSigned >= 0 ? "+" : "-"}${Math.abs(pnlSigned).toFixed(2)}`;
+
+                        return (
+                            <div
+                                key={position.id}
+                                className="flex gap-9 bg-slate-800 min-h-13 items-center p-2 rounded"
+                            >
+                                {/* Side */}
+                                <div
+                                    className={`
+          ${position.activeTradeTab === "Long" ? "bg-green-400" : "bg-red-400"}
+          min-w-[4.75rem] min-h-full flex justify-center items-center
+          text-gray-900 font-bold rounded
+        `}
+                                >
+                                    {position.activeTradeTab}
+                                </div>
+
+                                {/* Coin */}
+                                <div className="min-w-[4.75rem]">{position.tradeAsset}</div>
+
+                                {/* Size */}
+                                <div className="min-w-[4.75rem]">{position.size}</div>
+
+                                {/* Entry Price */}
+                                <div className="min-w-[4.75rem]">
+                                    {Number.isFinite(entry) ? `$${entry.toFixed(2)}` : "-"}
+                                </div>
+
+                                {/* Mark Price */}
+                                <div className="min-w-[4.75rem]">
+                                    {mark != null ? `$${mark.toFixed(2)}` : "-"}
+                                </div>
+
+                                {/* PNL */}
+                                <div
+                                    className={`min-w-[4.75rem] font-mono ${pnlIsProfit ? "text-green-400" : pnlIsLoss ? "text-red-400" : "text-gray-400"
+                                        }`}
+                                >
+                                    {pnlText}
+                                </div>
+                            </div>
+                        );
+                    })}
+
+                </div>
+            ) : (
+                <div className="mt-8 text-center text-gray-500">
+                    No open positions
+                </div>
+            )}
+        </div>
+    )
+}
+
+
+================================================================================
+UPDATED: components/TradeTab/TradeTab.tsx
+================================================================================
+
+PURPOSE:
+--------
+Refactored to be a controlled component - state lifted to parent.
+
+KEY CHANGES:
+------------
+1. CONTROLLED STATE:
+   - Removed local useState for tradeAsset, inputPrice, size, activeTradeTab
+   - Now receives tradeForm prop and onTradeFormChange callback
+   - All state changes go through parent
+
+2. POSITION SUBMIT:
+   - New onPositionSubmit callback prop
+   - Submit button calls this to add position
+
+3. INPUT ENHANCEMENTS:
+   - Numeric-only input with regex filter
+   - Fake placeholder that disappears when value exists
+   - Teal focus ring and hover states
+
+4. LONG/SHORT TOGGLE:
+   - Visual toggle between Long (teal) and Short (rose)
+   - Updates activeTradeTab in form state
+
+CODE:
+-----
+import type { Symbol, TradeFormState } from '@/lib/types';
+import { useState, useEffect } from 'react';
+import { Dropdown } from '@/components/ui/Dropdown';
+
+interface TradeTableProps {
+    symbol: Symbol;
+    openMenu: string | null;
+    setOpenMenu: (menu: string | null) => void;
+    onTradeFormChange: (value: Partial<TradeFormState>) => void;
+    tradeForm: TradeFormState;
+    onPositionSubmit: () => void;
+}
+
+export function TradeTab({
+    symbol,
+    setOpenMenu,
+    openMenu,
+    onTradeFormChange,
+    tradeForm,
+    onPositionSubmit
+}: TradeTableProps) {
+
+    return (
+        <div className="grid grid-cols-6 bg-[#131722] text-white">
+            <div>
+                cross
+            </div>
+            <div>
+                20x
+            </div>
+            <div>
+                classic
+            </div>
+            <div>
+                Market
+            </div>
+            <div>
+                Limit
+            </div>
+            <div>
+                Pro
+            </div>
+
+            <div className="col-span-6 flex justify-center">
+                <button
+                    className={`min-w-[11rem] min-h-[2.75rem] rounded-xl cursor-pointer transition ${tradeForm.activeTradeTab === 'Long' ? 'bg-teal-500' : 'bg-gray-400'}`}
+                    onClick={() =>
+                    onTradeFormChange({activeTradeTab:'Long'})}>
+
+                    Buy/Long
+                </button>
+
+                <button className={`min-w-[11rem] min-h-[2.75rem] rounded-xl
+                cursor-pointer transition ${tradeForm.activeTradeTab === 'Short' ? 'bg-rose-400' : 'bg-gray-400'}`}
+                    onClick={() => onTradeFormChange({activeTradeTab: 'Short'})
+                    }>
+                    Sell/Short
+                </button>
+            </div>
+
+            <div className="col-span-6 flex flex-col gap-1 p-[1rem]">
+                <div className="flex justify-between ">
+                    <div>
+                        Avalaible to Trade
+                    </div>
+                    <div>
+                        3000
+                    </div>
+                </div>
+
+                <div className="flex justify-between">
+                    <div>
+                        Current Position
+                    </div>
+                    <div>
+                        3000
+                    </div>
+                </div>
+            </div>
+
+            <div className="col-span-6 flex flex-col gap-2">
+                <div className="relative w-full
+                bg-transparent border rounded-xl flex text-white justify-between p-2
+                transition-colors
+                hover:border-teal-400
+                focus-within:border-teal-400
+                focus-within:ring-1
+                focus-within:ring-teal-400
+                ">
+                    {/* Fake placeholder */}
+                    {!tradeForm.inputPrice && (
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                            Price (USDC)
+                        </span>
+                    )}
+                    <input
+                        name="inputPrice"
+                        id="inputPriceField"
+                        className="w-full bg-transparent appearance-none outline-none text-right pr-2"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={tradeForm.inputPrice}
+                        onChange={(e) => {
+                            const onlyNumbers = e.target.value.replace(/\D/g, '');
+                            onTradeFormChange({inputPrice: onlyNumbers});
+                        }}
+                    />
+                    <button className="text-teal-400 mr-2">
+                        Mid
+                    </button>
+
+                </div>
+
+                <div className="relative w-full
+                bg-transparent border rounded-xl flex text-white justify-between p-2
+                transition-colors
+                hover:border-teal-400
+                focus-within:border-teal-400
+                focus-within:ring-1
+                focus-within:ring-teal-400
+                ">
+                    {/* Fake placeholder */}
+                    {!tradeForm.size && (
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                            Size
+                        </span>
+                    )}
+                    <input
+                        name="size"
+                        id="sizeField"
+                        className="w-full text-right bg-transparent appearance-none outline-none"
+                        value={tradeForm.size}
+                        onChange={(e) => {
+                            const onlyNumbers = e.target.value.replace(/\D/g, '');
+
+                            onTradeFormChange({size: onlyNumbers})
+                        }}
+                    />
+                    <Dropdown
+                        value={tradeForm.tradeAsset}
+                        onChange={(val) => {
+                            onTradeFormChange({tradeAsset: val})
+                            setOpenMenu(null)
+                        }}
+                        options={[
+                            { key: symbol + '1', label: symbol, value: symbol },
+                            { key: 'USDC-1', label: 'USDC', value: 'USDC' }
+                        ]}
+                        isOpen={openMenu === 'tradeAsset'}
+                        onToggle={() => {
+                            setOpenMenu(openMenu === 'tradeAsset' ? null : 'tradeAsset')
+                        }}
+                    />
+                </div>
+            </div>
+            <div className="col-span-6 flex justify-center">
+                <button
+                className={`${tradeForm.activeTradeTab === "Long" ? 'bg-green-400' : 'bg-red-400'} cursor-pointer text-white rounded-2xl min-w-[11rem] min-h-[2.75rem] m-2`}
+                onClick={onPositionSubmit}
+                >
+                {tradeForm.activeTradeTab === "Long" ? 'Long' : 'Short'}
+                </button>
+            </div>
+        </div>
+    )
+}
+
+
+================================================================================
+UPDATED: components/OrderBook/OrderBookRow.tsx
+================================================================================
+
+PURPOSE:
+--------
+Added click handler to fill price input when clicking a row.
+
+KEY CHANGES:
+------------
+- New onClick prop: (price: string) => void
+- Row is now clickable (cursor-pointer)
+- Clicking a row calls onClick with the price string
+
+CODE:
+-----
+import type { ProcessedLevel, Denomination } from '@/lib/types';
+import { formatSize, formatTotal } from '@/lib/utils';
+
+interface OrderBookRowProps {
+    level: ProcessedLevel | null;
+    side: 'bid' | 'ask';
+    depthPercentage: number;
+    denomination: Denomination;
+    displaySide: string;
+    onClick: (price: string) => void;
+}
+
+export function OrderBookRow({
+    level,
+    side,
+    depthPercentage,
+    denomination,
+    displaySide,
+    onClick
+}: OrderBookRowProps) {
+    const isBid = side === 'bid';
+    const colorClass = isBid ? 'text-green-500' : 'text-red-500';
+    const bgColorClass = isBid ? 'bg-green-500/10' : 'bg-red-500/10';
+    const flashClass = level?.isNew
+        ? (isBid ? 'animate-flash-row-green' : 'animate-flash-row-red')
+        : '';
+
+
+    return (
+        <div
+            onClick={() => level && onClick(level.priceStr)}
+            className={`relative grid grid-cols-3 gap-2 px-4 py-1.5 text-sm h-8 cursor-pointer ${flashClass}`}
+        >
+            {level ? (
+                <>
+                    <div
+                        className={`absolute top-[1px] bottom-[1px]
+                ${displaySide}
+                ${bgColorClass} transition-[width] duration-300 ease-out`}
+                        style={{ width: `${depthPercentage}%` }}
+                    />
+
+                    <div className={`${colorClass} font-mono relative z-10 text-left`}>
+                        {level.priceStr}
+                    </div>
+
+                    <div className="text-gray-300 font-mono relative z-10 text-center">
+                        {formatSize(level.size, level.sizeUsdc, denomination)}
+                    </div>
+
+                    <div className="text-gray-500 font-mono text-xs relative z-10 text-right">
+                        {formatTotal(level.total, level.totalUsdc, denomination)}
+                    </div>
+                </>
+            ) : (
+                <>
+                    <div
+                        className={`absolute top-[1px] bottom-[1px]
+                ${displaySide}
+                ${bgColorClass}
+                transition-[width] duration-300 ease-out`}
+                        style={{ width: '0%' }}
+                    />
+                    <div className={`${colorClass} font-mono relative z-10`}>&nbsp;</div>
+                    <div className="text-gray-300 font-mono relative z-10">&nbsp;</div>
+                    <div className="text-gray-500 font-mono text-xs relative z-10">&nbsp;</div>
+                </>
+            )}
+        </div>
+    );
+}
+
+
+================================================================================
+UPDATED: components/OrderBook/OrderBookTable.tsx
+================================================================================
+
+PURPOSE:
+--------
+Added onPriceSelect callback prop to pass click events up.
+
+KEY CHANGES:
+------------
+- New optional prop: onPriceSelect?: (price: string) => void
+- Passes onClick handler to each OrderBookRow
+
+CODE (relevant section):
+------------------------
+interface OrderBookTableProps {
+    fixedAsks: (ProcessedLevel | null)[];
+    fixedBids: (ProcessedLevel | null)[];
+    spread: { value: number; percentage: number } | null;
+    maxAskTotal: number;
+    maxBidTotal: number;
+    denomination: Denomination;
+    symbol: Symbol;
+    error: string | null;
+    onPriceSelect?: (price: string) => void;
+}
+
+// In the component:
+<OrderBookRow
+    key={`ask-row-${index}`}
+    level={ask}
+    side="ask"
+    depthPercentage={depthPercentage}
+    denomination={denomination}
+    displaySide="left-0"
+    onClick={(price) => onPriceSelect?.(price)}
+/>
+
+
+================================================================================
+UPDATED: components/OrderBook/TradesTable.tsx
+================================================================================
+
+PURPOSE:
+--------
+Minor update - changed container height.
+
+KEY CHANGES:
+------------
+- Changed from min-h-[1000px] max-h-[1000px] to h-[32.875rem]
+
+CODE (relevant section):
+------------------------
+<div className={`
+h-[32.875rem]
+overflow-y-auto
+`}>
+
+
+================================================================================
+UPDATED: components/ui/Dropdown.tsx
+================================================================================
+
+PURPOSE:
+--------
+Added optional key prop for dropdown options.
+
+KEY CHANGES:
+------------
+- DropdownOption interface now has optional key
+- Uses opt.key if provided, otherwise falls back to String(opt.value)
+- Prevents React key warnings when values might not be unique
+
+CODE (relevant section):
+------------------------
+interface DropdownOption<T> {
+  key?: string;
+  label: string;
+  value: T;
+}
+
+// In render:
+<button
+  key={opt.key ? opt.key : String(opt.value)}
+  ...
+>
+
+
+================================================================================
+UPDATED: app/page.tsx (Main Page)
+================================================================================
+
+PURPOSE:
+--------
+Complete refactor as the central state orchestrator.
+
+KEY CHANGES:
+------------
+1. TWO-COLUMN LAYOUT:
+   - grid grid-cols-2 for PositionsTable | OrderBook+TradeTab
+
+2. TRADE FORM STATE:
+   - tradeForm state lifted here
+   - callbackTradeForm for partial updates
+
+3. POSITION MANAGEMENT:
+   - userPositionData array state
+   - addPosition callback creates new position
+
+4. MARK PRICE CALCULATION:
+   - bestBidRef, bestAskRef to track latest values
+   - setInterval (500ms) calculates mark price: (bestBid + bestAsk) / 2
+   - Throttled to prevent excessive updates
+
+5. PNL CALCULATION:
+   - Runs in same interval as mark price
+   - Calculates PNL for each position
+
+6. CLICK-TO-FILL:
+   - onPriceSelect passed to OrderBookTable
+   - Updates tradeForm.inputPrice on click
+
+CODE:
+-----
+'use client';
+
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { OrderBookHeader } from '@/components/OrderBook/OrderBookHeader';
+import { OrderBookTable } from '@/components/OrderBook/OrderBookTable';
+import { TradesTable } from '@/components/OrderBook/TradesTable';
+import { TradeTab } from '@/components/TradeTab/TradeTab';
+import { PositionsTable } from '@/components/PositionsTable/PositionsTable';
+
+
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { useOrderBookState } from '@/hooks/useOrderBookState';
+import { useTrades } from '@/hooks/useTrades';
+
+import type { Symbol, Tab, Denomination, TradeFormState, Position } from '@/lib/types';
+
+export default function OrderBook() {
+  const [symbol, setSymbol] = useState<Symbol>('BTC');
+  const [priceGrouping, setPriceGrouping] = useState<number>(1);
+  const [activeTab, setActiveTab] = useState<Tab>('orderbook');
+  const [denomination, setDenomination] = useState<Denomination>('asset');
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  // Custom hooks
+  const {
+    fixedBids,
+    fixedAsks,
+    bestBid,
+    bestAsk,
+    spread,
+    maxBidTotal,
+    maxAskTotal,
+    processOrderBook,
+    error
+  } = useOrderBookState({ symbol, priceGrouping });
+
+  const { trades, processTrades, resetTrades } = useTrades({ symbol });
+
+  const { isConnected } = useWebSocket({
+    symbol,
+    onOrderBookUpdate: processOrderBook,
+    onTradesUpdate: processTrades
+  });
+
+  const [markPrice, setMarkPrice] = useState<number | null>(null);
+  const bestBidRef = useRef(bestBid);
+  const bestAskRef = useRef(bestAsk);
+
+
+  const currentMarkPriceRef = useRef<number | null>(null);
+
+
+  //User positions
+  const [userPositionData, setUserPositionData] =
+    useState<Position[]>([]);
+
+  //state for when buy/selling TradeTab
+  const [tradeForm, setTradeForm] = useState<TradeFormState>({
+    tradeAsset: symbol,
+    inputPrice: '',
+    size: '',
+    activeTradeTab: 'Long',
+    markPrice: null,
+    PNL: null
+  });
+
+  const [positionsPNL, setPositionsPNL] = useState<(number | string)[] | null>(null);
+
+
+  //actually we should throttle this, or rather wait until user finish making changees?
+  const addPosition = useCallback(() => {
+    const position = {
+      id: `${Date.now()}-0x${Math.random().toString(36).substring(2, 9)}`,
+      date: Date.now(),
+      ...tradeForm
+    }
+    setUserPositionData(prevState => [...prevState, position])
+  }, [tradeForm]);
+
+  useEffect(() => {
+    bestBidRef.current = bestBid;
+    bestAskRef.current = bestAsk;
+  }, [bestBid, bestAsk]);
+
+
+  useEffect(() => {
+    setTradeForm(prevState => ({
+      ...prevState,
+      tradeAsset: prevState.tradeAsset !== 'USDC' ? symbol : 'USDC'
+    }));
+  }, [symbol]);
+
+  // Reset trades when symbol changes
+  useEffect(() => {
+    resetTrades();
+    setPriceGrouping(symbol === 'BTC' ? 1 : 0.1);
+  }, [symbol, resetTrades]);
+
+  useEffect(() => {
+
+    const useTrottleId = setInterval(() => {
+      console.log(bestBidRef.current)
+
+      if (bestBidRef.current && bestAskRef.current) {
+
+        currentMarkPriceRef.current = (bestBidRef.current + bestAskRef.current) / 2;
+
+        setMarkPrice(currentMarkPriceRef.current);
+
+        if (userPositionData && currentMarkPriceRef.current !== null) {
+          const pnl = userPositionData.map((position) => {
+
+              const checkValid = (currentMarkPriceRef.current ?? "N/A")
+              const profit = checkValid !== "N/A" ? checkValid - parseInt(position.inputPrice) : "N/A";
+              return profit;
+          })
+          setPositionsPNL(pnl)
+          console.log(positionsPNL)
+        }
+      }
+    }, 500)
+
+    return () => {
+      clearInterval(useTrottleId);
+    }
+    // i have hard time always thinking what depency is needed for my hooks?
+  }, [userPositionData])
+
+  const callbackTradeForm = useCallback((value: Partial<TradeFormState>) => {
+    setTradeForm(prevState => ({ ...prevState, ...value }))
+  }, [])
+
+
+  return (
+    <div className="min-h-screen bg-[#0a0e13] text-white p-4">
+
+      <div className="grid grid-cols-2 gap-0">
+        <PositionsTable
+          userPositions={userPositionData}
+          markPrice={markPrice}
+          positionsPNL={positionsPNL}
+        />
+
+        <div className="max-w-l mx-[2.75rem]">
+          <OrderBookHeader
+            symbol={symbol}
+            setSymbol={setSymbol}
+            priceGrouping={priceGrouping}
+            setPriceGrouping={setPriceGrouping}
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            denomination={denomination}
+            setDenomination={setDenomination}
+            isConnected={isConnected}
+            openMenu={openMenu}
+            setOpenMenu={setOpenMenu}
+          />
+
+          {activeTab === 'orderbook' ? (
+            <OrderBookTable
+              fixedAsks={fixedAsks}
+              fixedBids={fixedBids}
+              spread={spread}
+              maxAskTotal={denomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
+              maxBidTotal={denomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
+              denomination={denomination}
+              symbol={symbol}
+              error={error}
+              onPriceSelect={(price) => callbackTradeForm({ inputPrice: price })}
+            />
+          ) : (
+            <TradesTable
+              trades={trades}
+              denomination={denomination}
+              symbol={symbol}
+            />
+          )}
+
+          <TradeTab
+            symbol={symbol}
+            openMenu={openMenu}
+            setOpenMenu={setOpenMenu}
+            onTradeFormChange={callbackTradeForm}
+            tradeForm={tradeForm}
+            onPositionSubmit={addPosition}
+          />
+
+          {/* Footer */}
+          <div className="mt-4 text-center text-xs text-gray-600">
+            {isConnected ? (
+              <span className="text-green-500">Live</span>
+            ) : (
+              <span className="text-red-500">Disconnected</span>
+            )}
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+
+================================================================================
+UPDATED: app/globals.css
+================================================================================
+
+PURPOSE:
+--------
+Remove default focus outlines for cleaner UI.
+
+CODE:
+-----
+input,
+textarea,
+select,
+button {
+  outline:none;
+}
+
+
+================================================================================
+SUMMARY OF CHANGES
+================================================================================
+
++---------------------------+-------------------------------------------+
+| Change                    | Impact                                    |
++---------------------------+-------------------------------------------+
+| Position Management       | Users can now create and track positions  |
++---------------------------+-------------------------------------------+
+| Lifted Trade Form State   | Single source of truth, enables features  |
+|                           | like click-to-fill price                  |
++---------------------------+-------------------------------------------+
+| Mark Price Calculation    | Real-time mid-market price from best      |
+|                           | bid/ask, throttled to 500ms               |
++---------------------------+-------------------------------------------+
+| Real-time PNL             | Live profit/loss calculation for all      |
+|                           | open positions                            |
++---------------------------+-------------------------------------------+
+| Click-to-Fill Price       | Click orderbook row to auto-fill price    |
+|                           | input in TradeTab                         |
++---------------------------+-------------------------------------------+
+| Two-Column Layout         | PositionsTable on left, OrderBook/Trade   |
+|                           | on right                                  |
++---------------------------+-------------------------------------------+
+| Worker Message Queuing    | Prevents dropped updates during high      |
+|                           | frequency WebSocket messages              |
++---------------------------+-------------------------------------------+
+| Best Bid/Ask from Worker  | Enables mark price calculation            |
++---------------------------+-------------------------------------------+
+
+
+================================================================================
+FILE STRUCTURE AFTER UPDATES
+================================================================================
+
+hyperliquid_widget/
+|-- app/
+|   |-- page.tsx                    [MAJOR UPDATE - State orchestrator]
+|   |-- globals.css                 [UPDATED - Remove outlines]
+|   +-- layout.tsx
+|-- components/
+|   |-- ui/
+|   |   |-- Dropdown.tsx            [UPDATED - Optional key prop]
+|   |   +-- TabSelector.tsx
+|   |-- OrderBook/
+|   |   |-- OrderBookHeader.tsx
+|   |   |-- OrderBookTable.tsx      [UPDATED - onPriceSelect prop]
+|   |   |-- OrderBookRow.tsx        [UPDATED - onClick prop]
+|   |   |-- TradesTable.tsx         [UPDATED - Height change]
+|   |   +-- SpreadIndicator.tsx
+|   |-- TradeTab/
+|   |   +-- TradeTab.tsx            [MAJOR UPDATE - Controlled component]
+|   +-- PositionsTable/
+|       +-- PositionsTable.tsx      [NEW - Position management]
+|-- hooks/
+|   |-- useWebSocket.tsx
+|   |-- useOrderBookState.tsx       [UPDATED - Queuing, bestBid/Ask]
+|   +-- useTrades.tsx
+|-- workers/
+|   +-- orderbook.worker.ts         [UPDATED - Returns bestBid/Ask]
++-- lib/
+    |-- types.ts                    [UPDATED - TradeFormState, Position]
+    |-- constants.ts
+    |-- utils.ts
+    +-- orderbook.ts
+
+
+================================================================================
+STATE FLOW DIAGRAM
+================================================================================
+
+                         page.tsx (Orchestrator)
+                                |
+       +------------------------+------------------------+
+       |                        |                        |
+       v                        v                        v
+ [tradeForm]            [userPositionData]         [markPrice]
+       |                        |                        |
+       |                        |                        |
+       v                        v                        v
+  TradeTab              PositionsTable             (from interval)
+       |                        ^                        |
+       |                        |                        |
+       +---------> addPosition() <-----------------------+
+                                                         |
+                        PNL = (mark - entry) * size * dir
+
+
+================================================================================
+KEY ARCHITECTURAL PATTERNS
+================================================================================
+
+1. LIFTED STATE PATTERN
+   - TradeForm state moved from TradeTab to page.tsx
+   - Enables cross-component communication (OrderBook -> TradeTab)
+   - Single source of truth
+
+2. CALLBACK PROP PATTERN
+   - callbackTradeForm accepts Partial<TradeFormState>
+   - Components call with only changed fields
+   - Parent merges with previous state
+
+3. THROTTLED CALCULATION
+   - Mark price updates every 500ms via setInterval
+   - Refs (bestBidRef, bestAskRef) store latest values
+   - Prevents excessive re-renders
+
+4. MESSAGE QUEUING
+   - Worker tracks processing state
+   - Incoming data queued while busy
+   - Latest queued data processed when worker frees
+
+5. CONTROLLED COMPONENTS
+   - TradeTab receives all state via props
+   - No local state, all changes via callbacks
+   - Parent has full control
