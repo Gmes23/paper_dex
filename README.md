@@ -1,6 +1,140 @@
 # Hyperliquid Order Book Widget
 
-A real-time cryptocurrency order book and trades viewer for Hyperliquid exchange, built with Next.js and TypeScript.
+================================================================================
+HYPERLIQUID ORDER BOOK WIDGET - HOW IT WORKS (SIMPLE OVERVIEW)
+================================================================================
+
+This project has two parallel data flows:
+
+1. Mock/Test Flow (for `/test-chart`)
+2. Live Production Flow (Hyperliquid WebSocket → DB → Chart)
+
+Both flows can run without breaking each other.
+
+================================================================================
+ARCHITECTURE SUMMARY
+================================================================================
+
+FRONTEND (Next.js UI)
+--------------------
+- Displays orderbook, trades, chart, and positions.
+- NEVER writes candles to DB in production.
+- Fetches historical candles from `/api/candles`.
+- Uses WebSocket trades only for visual, real-time candle updates.
+
+BACKEND (Background Service)
+----------------------------
+- Connects directly to Hyperliquid WebSocket.
+- Aggregates trades into 1-minute candles in memory.
+- Flushes candles to Postgres every 5 seconds (UPSERT).
+- Runs continuously when the app starts in Node runtime.
+
+================================================================================
+DATA FLOW (LIVE PRODUCTION)
+================================================================================
+
+Hyperliquid WebSocket
+  ↓
+Backend Service (Node)
+  - receives trades
+  - aggregates 1m candles in memory
+  - flushes to Postgres every 5s
+  ↓
+PostgreSQL `candles` table
+  ↓
+Frontend `/api/candles`
+  - fetches 1m candles
+  - aggregates to 5m/15m/1h on-demand
+  ↓
+Chart renders historical + live updates
+
+================================================================================
+DATA FLOW (MOCK / TEST)
+================================================================================
+
+Mock WebSocket (Frontend only)
+  ↓
+Frontend POST `/api/trades`
+  - saves mock trades
+  - builds mock 1m candles (test only)
+  ↓
+PostgreSQL `candles` table
+  ↓
+Frontend `/api/candles`
+  ↓
+Chart renders historical + live updates
+
+================================================================================
+WHAT THE BACKEND SAVES
+================================================================================
+
+Table: `candles`
+Each row = 1 minute bucket per symbol.
+
+Columns:
+- symbol (BTC, ETH, SOL, etc.)
+- interval = '1m' only (stored)
+- time = epoch seconds (bucket start)
+- open, high, low, close, volume
+
+When a new coin is added to the WebSocket symbols list, it starts writing
+new candle rows automatically (no extra table required).
+
+================================================================================
+HOW THE FRONTEND LOADS DATA
+================================================================================
+
+1. Page loads:
+   - `useChartData` calls `/api/candles?symbol=BTC&interval=5m&limit=500`
+2. API reads 1m candles and aggregates to requested interval.
+3. Chart renders historical data.
+4. Live trades update the current visible candle only (visual).
+5. Completed candles are always sourced from the database.
+
+================================================================================
+IMPORTANT FILES (LIVE PIPELINE)
+================================================================================
+
+- `services/websocketService.ts`
+  - Connects to Hyperliquid WebSocket.
+  - Feeds trades into aggregator.
+
+- `services/candleAggregator.ts`
+  - Builds 1m candles in memory.
+  - Flushes to DB every 5s with UPSERT.
+
+- `services/index.ts`
+  - Starts background services.
+
+- `instrumentation.ts`
+  - Auto-starts services on app launch (Node runtime only).
+
+- `app/api/candles/route.ts`
+  - Reads 1m candles from DB.
+  - Aggregates to 5m/15m/1h on demand.
+
+================================================================================
+IMPORTANT FILES (MOCK / TEST PIPELINE)
+================================================================================
+
+- `hooks/useMockWebSocket.tsx`
+  - Frontend mock trades generator.
+
+- `app/api/trades/route.ts`
+  - Persists mock trades.
+  - Builds 1m candles (test only).
+
+- `/test-chart`
+  - Test page for mock flow.
+
+================================================================================
+KEY RULES
+================================================================================
+
+- Frontend NEVER writes candles in production.
+- Backend writes candles continuously (live WebSocket).
+- Mock flow still works for testing.
+- Charts always read historical candles from the DB.
 
 ## Demo
 
@@ -79,6 +213,62 @@ npm run dev
 ```
 
 4. Open [http://localhost:3000](http://localhost:3000) in your browser
+
+## Environment Setup (Required)
+
+Create a `.env.local` file at the project root with the following:
+
+```bash
+# Use live Hyperliquid websocket in the frontend
+NEXT_PUBLIC_WS_SOURCE=live
+
+# JWT secret for wallet auth (required)
+JWT_SECRET=replace_with_long_random_string
+
+# Symbols for the backend candle service (optional)
+WS_SYMBOLS=BTC,ETH,SOL,ARB
+
+# Candle flush interval (optional)
+CANDLE_FLUSH_INTERVAL_MS=5000
+```
+
+Restart the dev server after editing `.env.local`.
+
+## Database Setup (Required)
+
+This project expects a PostgreSQL database. Defaults are defined in `lib/pgClient.ts`:
+
+- `PGHOST` defaults to `localhost`
+- `PGPORT` defaults to `5432`
+- `PGUSER` defaults to `gm`
+- `PGDATABASE` defaults to `fakeprices`
+- `PGPASSWORD` must be provided if your DB requires a password
+
+Apply the schema:
+
+```bash
+psql -h localhost -U gm -d fakeprices -f scripts/psql_schema.sql
+```
+
+If you use `DATABASE_URL`, set it in `.env.local` or your shell.
+
+## Running the App
+
+```bash
+npm run dev
+```
+
+You should see logs like:
+
+- `[Services] Initializing background services...`
+- `[WebSocket] Connected to Hyperliquid`
+- `[Candle Aggregator] Flushed X candles to DB`
+
+## Notes
+
+- `/test-chart` uses the mock WebSocket and persists mock trades via `/api/trades`.
+- Production candles are written by the backend WebSocket service (not the frontend).
+- On Vercel (serverless), the background service will not run. Use Railway/Render/VPS for 24/7 ingestion.
 
 ## Key Components
 

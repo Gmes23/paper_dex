@@ -13,7 +13,7 @@ export type CandleData = {
     volume: number;
 }
 
-function getIntervalMs(interval: TimeInterval): number {
+export function getIntervalMs(interval: TimeInterval): number {
     const min = 60 * 1000;
     
     switch (interval) {
@@ -39,6 +39,43 @@ type CandleMap = Omit<CandleData, 'time'> & {
     trades: ProcessedTrade[];
 };
 
+function getTradeTimestampMs(trade: ProcessedTrade): number | null {
+    if (Number.isFinite(trade.timeMs)) {
+        return trade.timeMs;
+    }
+
+    if (typeof trade.time === 'string') {
+        const parsed = Date.parse(trade.time);
+        if (Number.isFinite(parsed)) return parsed;
+
+        const parts = trade.time.split(':');
+        if (parts.length >= 2) {
+            const [h, m, s = '0'] = parts;
+            const hours = Number(h);
+            const minutes = Number(m);
+            const seconds = Number(s);
+            if (
+                Number.isFinite(hours) &&
+                Number.isFinite(minutes) &&
+                Number.isFinite(seconds)
+            ) {
+                const now = new Date();
+                const local = new Date(
+                    now.getFullYear(),
+                    now.getMonth(),
+                    now.getDate(),
+                    hours,
+                    minutes,
+                    seconds
+                );
+                return local.getTime();
+            }
+        }
+    }
+
+    return null;
+}
+
 export function aggregateTradesToCandles(
     trades: ProcessedTrade[],
     interval: TimeInterval
@@ -48,31 +85,24 @@ export function aggregateTradesToCandles(
     const intervalMs = getIntervalMs(interval);
     const candleMap = new Map<number, CandleMap>();
 
-    // Get today's date in UTC
-    const today = new Date();
-    const todayDateString = today.toISOString().split('T')[0]; // "2026-02-05"
-
-    console.log('🕰️ Today date string:', todayDateString);
     console.log('📊 Processing', trades.length, 'trades');
 
     // Sort trades by time
     const sortedTrades = [...trades].sort((a, b) => {
-        const timeA = new Date(`${todayDateString}T${a.time}Z`).getTime(); // Add Z for UTC
-        const timeB = new Date(`${todayDateString}T${b.time}Z`).getTime();
+        const timeA = getTradeTimestampMs(a) ?? 0;
+        const timeB = getTradeTimestampMs(b) ?? 0;
         return timeA - timeB;
     });
 
     sortedTrades.forEach((trade) => {
         const price = parseFloat(trade.price);
         
-        // Parse time with UTC timezone
-        const dateTimeString = `${todayDateString}T${trade.time}Z`; // Add Z for UTC
-        const timestamp = new Date(dateTimeString).getTime();
+        const timestamp = getTradeTimestampMs(trade);
 
         if (!Number.isFinite(timestamp) || !Number.isFinite(price)) {
             console.warn('⚠️ Skipping invalid trade:', {
                 time: trade.time,
-                dateTimeString,
+                timeMs: trade.timeMs,
                 timestamp,
                 price
             });

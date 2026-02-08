@@ -8,19 +8,29 @@ interface UseWebSocketProps {
   symbol: Symbol;
   onOrderBookUpdate: (data: OrderBookData) => void;
   onTradesUpdate: (data: TradeData[]) => void;
+  enabled?: boolean;
 }
 
 export function useWebSocket({ 
   symbol, 
   onOrderBookUpdate, 
-  onTradesUpdate 
+  onTradesUpdate,
+  enabled = true,
 }: UseWebSocketProps) {
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  const tradeCountRef = useRef(0);
+  const lastTradeTimeRef = useRef<number | null>(null);
+  const lastLogTimeRef = useRef(0);
 
   useEffect(() => {
     let ws: WebSocket;
+
+    if (!enabled) {
+      setIsConnected(false);
+      return;
+    }
 
     const connect = () => {
       try {
@@ -61,6 +71,25 @@ export function useWebSocket({
               onOrderBookUpdate(data.data);
             } else if (data.channel === 'trades' && data.data) {
               onTradesUpdate(data.data);
+              tradeCountRef.current += Array.isArray(data.data) ? data.data.length : 1;
+              const lastTrade = Array.isArray(data.data)
+                ? data.data[data.data.length - 1]
+                : data.data;
+              if (lastTrade?.time) {
+                lastTradeTimeRef.current = Number(lastTrade.time);
+              }
+
+              const now = Date.now();
+              if (now - lastLogTimeRef.current > 5000) {
+                lastLogTimeRef.current = now;
+                console.log('[WebSocket] Trades received', {
+                  symbol,
+                  count: tradeCountRef.current,
+                  lastTradeTime: lastTradeTimeRef.current
+                    ? new Date(lastTradeTimeRef.current).toISOString()
+                    : null,
+                });
+              }
             }
           } catch (error) {
             console.error('Error parsing message:', error);
@@ -104,7 +133,7 @@ export function useWebSocket({
         ws.close();
       }
     };
-  }, [symbol, onOrderBookUpdate, onTradesUpdate]);
+  }, [symbol, onOrderBookUpdate, onTradesUpdate, enabled]);
 
   return { isConnected };
 }

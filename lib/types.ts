@@ -35,27 +35,42 @@ export interface OrderBookLevel {
     sizeUsdc: number;
     side: 'buy' | 'sell';
     time: string;
+    timeMs: number;
     id: string;
   }
 
-  export interface TradeFormState {
-    tradeAsset: Symbol | 'USDC',
-    inputPrice: string;
-    size: string;
-    activeTradeTab: 'Long' | 'Short';
-    markPrice: number | null;
-    PNL: number | null;
-  }
+export interface TradeFormState {
+  tradeAsset: Symbol | 'USDC',
+  inputPrice: string;
+  size: string;
+  leverage: number;
+  activeTradeTab: 'Long' | 'Short';
+  markPrice: number | null;
+  PNL: number | null;
+}
 
-  export interface Position {
-    id: string;
-    date: number;
-    tradeAsset: Symbol | 'USDC',
-    inputPrice: string;
-    size: string;
-    activeTradeTab: 'Long' | 'Short';
-  } 
+export interface Position {
+  id: string;
+  date: number;
+  tradeAsset: Symbol | 'USDC',
+  inputPrice: string;
+  size: string;
+  activeTradeTab: 'Long' | 'Short';
+} 
+
+export interface PaperPosition {
+  id: number;
+  symbol: string;
+  side: 'long' | 'short';
+  entryPrice: number;
+  positionSize: number;
+  margin: number;
+  leverage: number;
+  liquidationPrice: number;
+  unrealizedPnl: number;
+  openedAt: string;
+}
   
-  export type Symbol = 'BTC' | 'ETH';
+  export type Symbol = 'BTC' | 'ETH' | 'BTC_MOCK';
   export type Tab = 'orderbook' | 'trades';
   export type Denomination = 'asset' | 'usdc';

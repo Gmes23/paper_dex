@@ -13,6 +13,9 @@ interface UseMockWebSocketProps {
   tradeIntervalMs?: number;   // how often to emit a trade (REAL time)
   speedMultiplier?: number;   // how fast SIMULATED time moves
   historicalCount?: number;
+  startTimeMs?: number;
+  //Simulate volatility
+  volatility?: number;
 }
 
 export function useMockWebSocket({
@@ -20,9 +23,11 @@ export function useMockWebSocket({
   onTradesUpdate,
   onOrderBookUpdate,
   enabled = true,
-  tradeIntervalMs = 2000,
+  tradeIntervalMs = 300,
   speedMultiplier = 1,
   historicalCount = 100,
+  startTimeMs,
+  volatility = 0.100,
 }: UseMockWebSocketProps) {
   const generatorRef = useRef<MockTradeGenerator | null>(null);
 
@@ -48,9 +53,18 @@ export function useMockWebSocket({
   useEffect(() => {
     if (!generatorRef.current) {
       // basePrice here is your starting price for mock world
-      generatorRef.current = new MockTradeGenerator(43000, 0.001);
+      generatorRef.current = new MockTradeGenerator(43000, volatility);
+      if (Number.isFinite(startTimeMs)) {
+        generatorRef.current.setCurrentTimeMs(startTimeMs as number);
+      }
     }
   }, []);
+
+  useEffect(() => {
+    if (!generatorRef.current) return;
+    if (!Number.isFinite(startTimeMs)) return;
+    generatorRef.current.setCurrentTimeMs(startTimeMs as number);
+  }, [startTimeMs]);
 
   // ✅ Helper: clear historical timeouts safely
   const clearHistoricalTimeouts = useCallback(() => {
@@ -164,6 +178,14 @@ export function useMockWebSocket({
     console.log(`⏩ Fast forwarded ${minutes} minutes`);
   }, []);
 
+  const syncToTimeMs = useCallback((timeMs: number) => {
+    const gen = generatorRef.current;
+    if (!gen) return;
+    if (!Number.isFinite(timeMs)) return;
+    gen.setCurrentTimeMs(timeMs);
+    console.log('🧭 Synced mock time', { timeMs, time: new Date(timeMs).toISOString() });
+  }, []);
+
   const generateBatch = useCallback(
     (count: number) => {
       const gen = generatorRef.current;
@@ -192,6 +214,7 @@ export function useMockWebSocket({
   return {
     fastForward,
     generateBatch,
+    syncToTimeMs,
     isConnected: enabled,
   };
 }

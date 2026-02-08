@@ -4,3 +4,4 @@ export const NUM_ROWS = 15;
 export const API_URL = 'wss://api.hyperliquid.xyz/ws';
 export const MAX_TRADES = 50;
 export const RECONNECT_DELAY = 3000;
+export const WS_SOURCE = (process.env.NEXT_PUBLIC_WS_SOURCE ?? 'mock') as 'mock' | 'live';

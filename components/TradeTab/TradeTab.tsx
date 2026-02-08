@@ -8,6 +8,8 @@ interface TradeTableProps {
     onTradeFormChange: (value: Partial<TradeFormState>) => void;
     tradeForm: TradeFormState;
     onPositionSubmit: () => void;
+    availableBalance: number;
+    currentMarkPrice: number | null;
 }
 
 export function TradeTab({
@@ -16,7 +18,9 @@ export function TradeTab({
     openMenu,
     onTradeFormChange,
     tradeForm,
-    onPositionSubmit
+    onPositionSubmit,
+    availableBalance,
+    currentMarkPrice
 }: TradeTableProps) {
 
 
@@ -66,7 +70,7 @@ export function TradeTab({
                         Avalaible to Trade
                     </div>
                     <div>
-                        3000
+                        {availableBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                     </div>
                 </div>
 
@@ -75,7 +79,7 @@ export function TradeTab({
                         Current Position
                     </div>
                     <div>
-                        3000
+                        —
                     </div>
                 </div>
             </div>
@@ -89,28 +93,10 @@ export function TradeTab({
                 focus-within:ring-1
                 focus-within:ring-teal-400
                 ">
-                    {/* Fake placeholder */}
-                    {!tradeForm.inputPrice && (
-                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
-                            Price (USDC)
-                        </span>
-                    )}
-                    <input
-                        name="inputPrice"
-                        id="inputPriceField"
-                        className="w-full bg-transparent appearance-none outline-none text-right pr-2"
-                        type="text"
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        value={tradeForm.inputPrice}
-                        onChange={(e) => {
-                            const onlyNumbers = e.target.value.replace(/\D/g, '');
-                            onTradeFormChange({inputPrice: onlyNumbers});
-                        }}
-                    />
-                    <button className="text-teal-400 mr-2">
-                        Mid
-                    </button>
+                    <div className="text-gray-400">Market Price</div>
+                    <div className="text-right pr-2">
+                        {currentMarkPrice != null ? `$${currentMarkPrice.toFixed(2)}` : '—'}
+                    </div>
 
                 </div>
 
@@ -154,6 +140,27 @@ export function TradeTab({
                             setOpenMenu(openMenu === 'tradeAsset' ? null : 'tradeAsset')
                         }}
                     />
+                </div>
+                <div className="relative w-full
+                bg-transparent border rounded-xl flex text-white justify-between p-2
+                transition-colors
+                hover:border-teal-400
+                focus-within:border-teal-400
+                focus-within:ring-1
+                focus-within:ring-teal-400
+                ">
+                    <div className="text-gray-400">Leverage</div>
+                    <select
+                        className="bg-transparent outline-none text-right"
+                        value={tradeForm.leverage}
+                        onChange={(e) => onTradeFormChange({ leverage: Number(e.target.value) })}
+                    >
+                        {[1, 2, 5, 10].map((lev) => (
+                            <option key={lev} value={lev} className="text-black">
+                                {lev}x
+                            </option>
+                        ))}
+                    </select>
                 </div>
             </div>
             <div className="col-span-6 flex justify-center">

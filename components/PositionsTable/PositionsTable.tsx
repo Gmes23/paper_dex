@@ -1,17 +1,16 @@
-import { useState } from 'react';
-import type { Position } from '@/lib/types';
+import type { PaperPosition } from '@/lib/types';
 
 interface PositionsTableProps {
-    userPositions: Position[];
+    userPositions: PaperPosition[];
     markPrice: number | null;
-    positionsPNL: (number | string)[] | null;
+    onClosePosition: (id: number) => void;
 }
 
 
 export function PositionsTable({
     userPositions,
     markPrice,
-    positionsPNL
+    onClosePosition
 }: PositionsTableProps) {
 
     const positionsTabs = [
@@ -36,24 +35,13 @@ export function PositionsTable({
 
     const currentTab = [
         { key: 'Positions' + 2, label: 'Coin' },
-        {
-            key: 'Positions' + 3, label: 'Size'
-        }, {
-            key: 'Positions' + 4,
-            label: 'Position Value'
-        }, {
-            key: 'Entry Price',
-            label: 'Entry Price'
-        }, {
-            key: 'Mark Price',
-            label: 'Mark Price'
-        }, {
-            key: 'PNL',
-            label: 'PNL (ROE%)'
-        }, {
-            key: 'lid price',
-            label: 'liq price'
-        }
+        { key: 'Positions' + 3, label: 'Size (BTC)' },
+        { key: 'Positions' + 4, label: 'Position (USDC)' },
+        { key: 'Entry Price', label: 'Entry Price' },
+        { key: 'Mark Price', label: 'Mark Price' },
+        { key: 'PNL', label: 'PNL (ROE%)' },
+        { key: 'lid price', label: 'liq price' },
+        { key: 'liq dist', label: 'liq dist' }
     ];
 
 
@@ -86,21 +74,25 @@ export function PositionsTable({
             {/* Positions */}
             {userPositions && userPositions.length > 0 ? (
                 <div className="mt-4 flex flex-col gap-3">
-                    {userPositions.map((position: Position) => {
-                        const entry = Number(position.inputPrice);
-                        const size = Number(position.size);
-
-                        // guard against empty inputs / NaN
-                        const hasNumbers = Number.isFinite(entry) && Number.isFinite(size);
-
-                        const mark = markPrice; // number | null
-
-                        const dir = position.activeTradeTab === "Long" ? 1 : -1;
+                    {userPositions.map((position: PaperPosition) => {
+                        const entry = Number(position.entryPrice);
+                        const size = Number(position.positionSize);
+                        const mark = markPrice;
+                        const dir = position.side === 'long' ? 1 : -1;
+                        const baseQty = entry > 0 ? size / entry : 0;
 
                         const pnlSigned =
-                            mark != null && hasNumbers
-                                ? (mark - entry) * size * dir
+                            mark != null
+                                ? ((mark - entry) / entry) * size * dir
                                 : null;
+                        const roe = pnlSigned != null && position.margin > 0
+                            ? (pnlSigned / position.margin) * 100
+                            : null;
+                        const liqDistance = mark != null && position.liquidationPrice > 0
+                            ? (position.side === 'long'
+                                ? ((mark - position.liquidationPrice) / mark) * 100
+                                : ((position.liquidationPrice - mark) / mark) * 100)
+                            : null;
 
                         const pnlIsProfit = pnlSigned != null && pnlSigned > 0;
                         const pnlIsLoss = pnlSigned != null && pnlSigned < 0;
@@ -109,6 +101,10 @@ export function PositionsTable({
                             pnlSigned == null
                                 ? "—"
                                 : `${pnlSigned >= 0 ? "+" : "-"}${Math.abs(pnlSigned).toFixed(2)}`;
+                        const roeText = roe == null ? "—" : `${roe >= 0 ? "+" : ""}${roe.toFixed(2)}%`;
+                        const liqText = liqDistance == null ? "—" : `${liqDistance.toFixed(2)}%`;
+                        const liqWarn = liqDistance != null && liqDistance <= 2;
+                        const liqDanger = liqDistance != null && liqDistance <= 1;
 
                         return (
                             <div
@@ -123,14 +119,17 @@ export function PositionsTable({
           text-gray-900 font-bold rounded
         `}
                                 >
-                                    {position.activeTradeTab}
+                                    {position.side === 'long' ? 'Long' : 'Short'}
                                 </div>
 
                                 {/* Coin */}
-                                <div className="min-w-[4.75rem]">{position.tradeAsset}</div>
+                                <div className="min-w-[4.75rem]">{position.symbol}</div>
 
                                 {/* Size */}
-                                <div className="min-w-[4.75rem]">{position.size}</div>
+                                <div className="min-w-[4.75rem]">{baseQty.toFixed(4)}</div>
+
+                                {/* Position Value */}
+                                <div className="min-w-[4.75rem]">{position.positionSize.toFixed(2)}</div>
 
                                 {/* Entry Price */}
                                 <div className="min-w-[4.75rem]">
@@ -147,8 +146,26 @@ export function PositionsTable({
                                     className={`min-w-[4.75rem] font-mono ${pnlIsProfit ? "text-green-400" : pnlIsLoss ? "text-red-400" : "text-gray-400"
                                         }`}
                                 >
-                                    {pnlText}
+                                    {pnlText} <span className="text-xs text-gray-400">({roeText})</span>
                                 </div>
+                                <div className="min-w-[4.75rem]">
+                                    {Number.isFinite(position.liquidationPrice)
+                                        ? `$${position.liquidationPrice.toFixed(2)}`
+                                        : '—'}
+                                </div>
+                                <div
+                                    className={`min-w-[4.75rem] ${
+                                        liqDanger ? 'text-red-400' : liqWarn ? 'text-yellow-400' : 'text-gray-400'
+                                    }`}
+                                >
+                                    {liqText}
+                                </div>
+                                <button
+                                    onClick={() => onClosePosition(position.id)}
+                                    className="ml-2 px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600"
+                                >
+                                    Close
+                                </button>
                             </div>
                         );
                     })}

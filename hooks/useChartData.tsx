@@ -2,7 +2,8 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { aggregateTradesToCandles, TimeInterval, CandleData } from '@/lib/chartUtils';
+import { getIntervalMs, TimeInterval, CandleData } from '@/lib/chartUtils';
+import { apiFetch } from '@/lib/apiFetch';
 import type { ProcessedTrade } from '@/lib/types';
 
 interface UseChartDataProps {
@@ -19,13 +20,13 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
   // Track last candle time we trust (seconds)
   const lastCandleTimeRef = useRef<number | null>(null);
 
-  // Track how many trades we've already processed
-  const processedTradeCountRef = useRef<number>(0);
+  // Track the last trade time (ms) we've already processed
+  const lastProcessedTradeTimeMsRef = useRef<number>(0);
 
   // Reset when symbol/interval changes
   useEffect(() => {
-    processedTradeCountRef.current = 0;
-    // setCandles([]); 
+    lastProcessedTradeTimeMsRef.current = 0;
+    setCandles([]);
     lastCandleTimeRef.current = null;
   }, [symbol, interval]);
 
@@ -39,22 +40,27 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
       setError(null);
 
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/candles?symbol=${symbol}&interval=${interval}&limit=500`,
           { signal: controller.signal }
         );
 
         if (!res.ok) throw new Error(`Failed to fetch DB candles (${res.status})`);
 
-        const data: CandleData[] = await res.json();
+        const payload = await res.json();
+        const raw: CandleData[] = Array.isArray(payload?.candles) ? payload.candles : [];
         if (cancelled) return;
 
+        const data = [...raw].sort((a, b) => a.time - b.time);
         setCandles(data);
 
-        const last = data[data.length - 1]?.time ?? null;
+        const last = data.length > 0 ? data[data.length - 1].time : null;
         lastCandleTimeRef.current = last;
 
-        console.log(`📦 Loaded ${data.length} DB candles. Last candle time:`, last);
+        console.info('📦 Loaded DB candles', {
+          count: data.length,
+          lastCandleTime: last,
+        });
       } catch (err) {
         if (cancelled) return;
         if ((err as any)?.name === 'AbortError') return;
@@ -76,58 +82,115 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
   // 2️⃣ Merge realtime trades into candles (incremental)
   useEffect(() => {
     if (loading) return;
-    if (trades.length === 0) return;
+    if (trades.length === 0) {
+      lastProcessedTradeTimeMsRef.current = 0;
+      return;
+    }
 
-    // Only process NEW trades (ones we haven't seen before)
-    const newTrades = trades.slice(processedTradeCountRef.current);
-    
+    const lastCandleTimeMs = lastCandleTimeRef.current
+      ? lastCandleTimeRef.current * 1000
+      : null;
+
+    const newTrades = trades.filter(
+      (trade) =>
+        Number.isFinite(trade.timeMs) &&
+        trade.timeMs > lastProcessedTradeTimeMsRef.current
+    );
+
     if (newTrades.length === 0) return;
 
-    console.log(`🔄 Processing ${newTrades.length} new trades (total: ${trades.length})`);
+    const maxTradeTimeMs = Math.max(...newTrades.map((t) => t.timeMs));
+    lastProcessedTradeTimeMsRef.current = maxTradeTimeMs;
 
-    // Update our counter
-    processedTradeCountRef.current = trades.length;
+    const filteredTrades = lastCandleTimeMs
+      ? newTrades.filter((trade) => trade.timeMs >= lastCandleTimeMs)
+      : newTrades;
 
-    // Aggregate only the new trades
-    const realtimeCandles = aggregateTradesToCandles(newTrades, interval);
-    
-    if (realtimeCandles.length === 0) return;
+    if (lastCandleTimeMs && maxTradeTimeMs < lastCandleTimeMs) {
+      console.warn('⚠️ Trades are behind last candle time', {
+        lastCandleTimeMs,
+        maxTradeTimeMs,
+        lagSeconds: Math.round((lastCandleTimeMs - maxTradeTimeMs) / 1000),
+      });
+    }
 
-    console.log(`🕯️ Generated ${realtimeCandles.length} candles from new trades`);
+    if (filteredTrades.length === 0) return;
+
+    console.info('🔄 Processing realtime trades', {
+      newTrades: newTrades.length,
+      totalTrades: trades.length,
+      lastCandleTimeMs,
+      maxTradeTimeMs,
+    });
+
+    const intervalMs = getIntervalMs(interval);
+    const sortedTrades = [...filteredTrades].sort((a, b) => a.timeMs - b.timeMs);
 
     setCandles((prev) => {
       const next = [...prev];
-      let lastTime = lastCandleTimeRef.current;
+      let lastTime = next.length > 0 ? next[next.length - 1].time : null;
 
-      for (const newCandle of realtimeCandles) {
-        // If we have no baseline, accept it
+      for (const trade of sortedTrades) {
+        if (!Number.isFinite(trade.timeMs)) continue;
+
+        const price = parseFloat(trade.price);
+        if (!Number.isFinite(price)) continue;
+
+        const bucketMs = Math.floor(trade.timeMs / intervalMs) * intervalMs;
+        const bucketSec = Math.floor(bucketMs / 1000);
+
         if (lastTime === null) {
-          next.push(newCandle);
-          lastTime = newCandle.time;
-          lastCandleTimeRef.current = newCandle.time;
-          console.log('📊 First candle added:', newCandle.time);
-          continue;
-        }
-
-        // New candle (different time bucket)
-        if (newCandle.time > lastTime) {
-          next.push(newCandle);
-          lastTime = newCandle.time;
-          lastCandleTimeRef.current = newCandle.time;
-          console.log('📊 New candle bar:', new Date(newCandle.time * 1000).toLocaleTimeString());
-          continue;
-        }
-
-        // Update current candle (same time bucket)
-        if (newCandle.time === lastTime) {
-          const oldCandle = next[next.length - 1];
-          next[next.length - 1] = newCandle;
-          console.log('🔄 Updated current candle:', {
-            time: new Date(newCandle.time * 1000).toLocaleTimeString(),
-            old: `O:${oldCandle.open} H:${oldCandle.high} L:${oldCandle.low} C:${oldCandle.close}`,
-            new: `O:${newCandle.open} H:${newCandle.high} L:${newCandle.low} C:${newCandle.close}`
+          next.push({
+            time: bucketSec,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume: trade.size,
           });
+          lastTime = bucketSec;
+          continue;
         }
+
+        if (bucketSec > lastTime) {
+          next.push({
+            time: bucketSec,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume: trade.size,
+          });
+          lastTime = bucketSec;
+          continue;
+        }
+
+        if (bucketSec === lastTime) {
+          const last = next[next.length - 1];
+          if (!last) {
+            next.push({
+              time: bucketSec,
+              open: price,
+              high: price,
+              low: price,
+              close: price,
+              volume: trade.size,
+            });
+            lastTime = bucketSec;
+            continue;
+          }
+          next[next.length - 1] = {
+            ...last,
+            high: Math.max(last.high, price),
+            low: Math.min(last.low, price),
+            close: price,
+            volume: last.volume + trade.size,
+          };
+        }
+      }
+
+      if (lastTime !== null) {
+        lastCandleTimeRef.current = lastTime;
       }
 
       return next;
@@ -142,22 +205,23 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
     const controller = new AbortController();
 
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/candles?symbol=${symbol}&interval=${interval}&limit=500`,
         { signal: controller.signal }
       );
 
       if (!res.ok) throw new Error(`Failed to refresh candles (${res.status})`);
 
-      const data: CandleData[] = await res.json();
-
+      const payload = await res.json();
+      const raw: CandleData[] = Array.isArray(payload?.candles) ? payload.candles : [];
+      const data = [...raw].sort((a, b) => a.time - b.time);
       setCandles(data);
 
-      const last = data[data.length - 1]?.time ?? null;
+      const last = data.length > 0 ? data[data.length - 1].time : null;
       lastCandleTimeRef.current = last;
-      processedTradeCountRef.current = 0; // Reset trade counter on refresh
-      
-      console.log(`🔄 Refreshed ${data.length} candles from DB`);
+      lastProcessedTradeTimeMsRef.current = 0; // Reset trade counter on refresh
+
+      console.info('🔄 Refreshed DB candles', { count: data.length });
     } catch (err) {
       if ((err as any)?.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : 'Failed to refresh');
@@ -174,5 +238,7 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
     refresh,
     firstCandle: candles[0] || null,
     lastCandle: candles[candles.length - 1] || null,
+    lastCandleTime: lastCandleTimeRef.current,
+    lastProcessedTradeTimeMs: lastProcessedTradeTimeMsRef.current,
   };
 }

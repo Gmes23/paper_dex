@@ -4,13 +4,8 @@ export interface MockTrade {
     price: string;
     size: number;
     side: 'buy' | 'sell';
-  
-    // keep the ISO string (your existing feature)
     time: string;
-  
-    // ✅ ADD: numeric time (ms since epoch) for candle bucketing
     timeMs: number;
-  
     id: string;
   }
   
@@ -25,7 +20,6 @@ export interface MockTrade {
     levels: [MockOrderBookLevel[], MockOrderBookLevel[]];
     time: number;
   }
-  
   /**
    * Generate realistic trade data
    */
@@ -107,13 +101,21 @@ export interface MockTrade {
       return multiplier;
     }
   
-    /**
-     * Jump forward in time
-     */
-    fastForward(minutes: number) {
-      this.currentTime = new Date(this.currentTime.getTime() + minutes * 60 * 1000);
-    }
+  /**
+   * Jump forward in time
+   */
+  fastForward(minutes: number) {
+    this.currentTime = new Date(this.currentTime.getTime() + minutes * 60 * 1000);
   }
+
+  /**
+   * Sync current time to a specific timestamp (ms)
+   */
+  setCurrentTimeMs(timeMs: number) {
+    if (!Number.isFinite(timeMs)) return;
+    this.currentTime = new Date(timeMs);
+  }
+}
   
   /**
    * Generate mock orderbook data

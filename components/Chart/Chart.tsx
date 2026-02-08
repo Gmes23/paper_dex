@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
     createChart,
     ColorType,
@@ -31,6 +31,7 @@ export function PriceChart({
     const chartRef = useRef<IChartApi | null>(null);
     const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
     const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+    const [autoScale, setAutoScale] = useState(true);
 
     // Track if we already set full history once
     const didSetInitialDataRef = useRef(false);
@@ -160,6 +161,12 @@ export function PriceChart({
         volumeSeriesRef.current?.setData([] as any);
     }, [interval, symbol]);
 
+    useEffect(() => {
+        const candleSeries = candleSeriesRef.current;
+        if (!candleSeries) return;
+        candleSeries.priceScale().applyOptions({ autoScale });
+    }, [autoScale]);
+
 
 
     const showEmpty = !loading && candles.length === 0;
@@ -169,7 +176,7 @@ export function PriceChart({
             <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-bold text-white">{symbol}/USDC</h2>
 
-                <div className="flex gap-2">
+                <div className="flex gap-2 items-center">
                     {(['1m', '5m', '15m', '1h'] as TimeInterval[]).map((int) => (
                         <button
                             key={int}
@@ -183,6 +190,16 @@ export function PriceChart({
                             {int}
                         </button>
                     ))}
+                    <button
+                        onClick={() => setAutoScale((prev) => !prev)}
+                        className={`px-3 py-1 rounded font-bold transition ${
+                            autoScale ? 'bg-yellow-500 text-black' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        }`}
+                        title={autoScale ? 'Auto-scale enabled' : 'Auto-scale disabled'}
+                        aria-pressed={autoScale}
+                    >
+                        A
+                    </button>
                 </div>
             </div>
 
