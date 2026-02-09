@@ -15,6 +15,7 @@ import { usePersistedOrderBook } from '@/hooks/usePersistedOrderBook';
 import { useOrderBookState } from '@/hooks/useOrderBookState';
 import { useTrades } from '@/hooks/useTrades';
 import { usePaperPositions } from '@/hooks/usePaperPositions';
+import { usePaperTrades } from '@/hooks/usePaperTrades';
 import { useWalletAuth } from '@/hooks/useWalletAuth';
 import { useChartData } from '@/hooks/useChartData';
 
@@ -148,6 +149,7 @@ export default function OrderBook() {
 
   const { user, refresh: refreshUser } = useWalletAuth();
   const { positions, openPosition, closePosition } = usePaperPositions();
+  const { trades: pastTrades, refresh: refreshPastTrades } = usePaperTrades();
   const [markPriceBySymbol, setMarkPriceBySymbol] = useState<Record<string, number>>({});
 
   useEffect(() => {
@@ -318,7 +320,7 @@ export default function OrderBook() {
       {/* Main content: 3 columns */}
       <div className="flex-1 flex min-h-0">
         {/* Left column: Chart + Positions */}
-        <div className="flex-1 flex flex-col min-w-0 border-r border-white/5 px-3 pt-3 pb-3 gap-3">
+        <div className="flex-1 flex flex-col min-w-0 border-white/5 px-3 pt-3 pb-3 gap-3">
           <PriceChart
             candles={candles}
             loading={candlesLoading}
@@ -331,10 +333,12 @@ export default function OrderBook() {
           <div className="rounded-xl border border-white/10 overflow-hidden">
             <PositionsTable
               userPositions={positions}
+              pastTrades={pastTrades}
               getMarkPriceForSymbol={getMarkPriceForSymbol}
               onClosePosition={async (id) => {
                 try {
                   await closePosition(id);
+                  await refreshPastTrades();
                   await refreshUser();
                 } catch (err) {
                   alert((err as Error).message ?? 'Failed to close position');
@@ -345,72 +349,76 @@ export default function OrderBook() {
         </div>
 
         {/* Middle column: Order Book */}
-        <div className="w-[280px] flex-shrink-0 border-r border-white/5 flex flex-col">
-          <div className="px-3 py-4 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-3 text-[11px] uppercase tracking-wider">
-              <button
-                type="button"
-                onClick={() => setActiveTab('orderbook')}
-                className={`transition cursor-pointer ${
-                  activeTab === 'orderbook'
-                    ? 'text-white'
-                    : 'text-gray-500 hover:text-white'
-                }`}
-              >
-                Order Book
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('trades')}
-                className={`transition cursor-pointer ${
-                  activeTab === 'trades'
-                    ? 'text-white'
-                    : 'text-gray-500 hover:text-white'
-                }`}
-              >
-                Trades
-              </button>
+        <div className="w-[280px] flex-shrink-0 px-1 pt-3 pb-3 flex flex-col">
+          <div className="rounded-xl border border-white/10 bg-[#0d1117] overflow-hidden h-[720px] flex flex-col">
+            <div className="px-3 py-4 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3 text-[11px] uppercase tracking-wider">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('orderbook')}
+                  className={`transition cursor-pointer ${
+                    activeTab === 'orderbook'
+                      ? 'text-white'
+                      : 'text-gray-500 hover:text-white'
+                  }`}
+                >
+                  Order Book
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('trades')}
+                  className={`transition cursor-pointer ${
+                    activeTab === 'trades'
+                      ? 'text-white'
+                      : 'text-gray-500 hover:text-white'
+                  }`}
+                >
+                  Trades
+                </button>
 
+              </div>
+              <span className="text-[10px] text-gray-500 tabular-nums">
+                Updated: {orderBookStalenessMs != null ? `${orderBookStalenessMs}ms ago` : 'n/a'}
+              </span>
             </div>
-            <span className="text-[10px] text-gray-500 tabular-nums">
-              Last update: {orderBookStalenessMs != null ? `${orderBookStalenessMs}ms ago` : 'n/a'}
-            </span>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            {activeTab === 'orderbook' ? (
-              <OrderBookTable
-                fixedAsks={fixedAsks}
-                fixedBids={fixedBids}
-                spread={spread}
-                maxAskTotal={orderBookDenomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
-                maxBidTotal={orderBookDenomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
-                denomination={orderBookDenomination}
-                symbol={symbol}
-                error={error}
-                onPriceSelect={(price) => callbackTradeForm({ inputPrice: price })}
-              />
-            ) : (
-              <TradesTable
-                trades={trades}
-                denomination={tradesDenomination}
-                symbol={symbol}
-                onToggleDenomination={toggleTradesDenomination}
-              />
-            )}
+            <div className="flex-1 overflow-y-auto">
+              {activeTab === 'orderbook' ? (
+                <OrderBookTable
+                  fixedAsks={fixedAsks}
+                  fixedBids={fixedBids}
+                  spread={spread}
+                  maxAskTotal={orderBookDenomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
+                  maxBidTotal={orderBookDenomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
+                  denomination={orderBookDenomination}
+                  symbol={symbol}
+                  error={error}
+                  onPriceSelect={(price) => callbackTradeForm({ inputPrice: price })}
+                />
+              ) : (
+                <TradesTable
+                  trades={trades}
+                  denomination={tradesDenomination}
+                  symbol={symbol}
+                  onToggleDenomination={toggleTradesDenomination}
+                />
+              )}
+            </div>
           </div>
         </div>
 
         {/* Right column: Place Order */}
-        <div className="w-[260px] flex-shrink-0 p-4 flex flex-col">
-          <TradeTab
-            symbol={symbol}
-            openMenu={openMenu}
-            setOpenMenu={setOpenMenu}
-            onTradeFormChange={callbackTradeForm}
-            tradeForm={tradeForm}
-            onPositionSubmit={addPosition}
-            currentMarkPrice={markPrice}
-          />
+        <div className="w-[260px] flex-shrink-0 px-1 pt-3 pb-3 pr-3 flex flex-col">
+          <div className="rounded-xl border border-white/10 bg-[#0d1117] p-3 pt-4 h-[720px] overflow-hidden">
+            <TradeTab
+              symbol={symbol}
+              openMenu={openMenu}
+              setOpenMenu={setOpenMenu}
+              onTradeFormChange={callbackTradeForm}
+              tradeForm={tradeForm}
+              onPositionSubmit={addPosition}
+              currentMarkPrice={markPrice}
+            />
+          </div>
         </div>
       </div>
     </div>

@@ -40,10 +40,7 @@ export function TradesTable({ trades, denomination, symbol, onToggleDenomination
       </div>
 
       {/* Trades List */}
-      <div className={`
-      h-[43.375rem]
-      overflow-y-auto
-      `}>
+      <div className="h-full overflow-y-auto">
         {trades.map((trade) => (
 
             <div key={trade.id} className={`${trade.side === 'buy' ? 'bg-green-500' : 'bg-red-300' } text-black`}>

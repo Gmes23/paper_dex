@@ -126,7 +126,7 @@ export function TradeTab({
     return (
         <div className="flex flex-col h-full">
             {/* Header */}
-            <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-3">Place Order</div>
+            <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-2">Place Order</div>
 
             {/* Limit / Market toggle */}
             <div className="grid grid-cols-2 gap-1 mb-3">

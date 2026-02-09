@@ -50,7 +50,7 @@ export function Navbar({ symbol, markPrice, availableBalance, onSymbolChange, sy
   }, []);
 
   return (
-    <nav className="w-full px-5 py-3 border-b border-white/10 bg-[#0a0e13] text-white flex items-center justify-between">
+    <nav className="w-full px-5 py-3  text-white flex items-center justify-between">
       <div className="flex items-center gap-4">
         <span className="font-semibold text-sm tracking-wide uppercase">Paper Dex</span>
 

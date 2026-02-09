@@ -70,6 +70,21 @@ export interface PaperPosition {
   unrealizedPnl: number;
   openedAt: string;
 }
+
+export interface PaperTrade {
+  id: number;
+  symbol: string;
+  side: 'long' | 'short';
+  entryPrice: number;
+  exitPrice: number;
+  positionSize: number;
+  margin: number;
+  leverage: number;
+  realizedPnl: number;
+  status: 'closed' | 'liquidated';
+  openedAt: string;
+  closedAt: string;
+}
   
   export type Symbol = 'BTC' | 'ETH' | 'BTC_MOCK';
   export type Tab = 'orderbook' | 'trades';

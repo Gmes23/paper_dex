@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import {
     createChart,
     ColorType,
@@ -33,7 +33,6 @@ export function PriceChart({
     const chartRef = useRef<IChartApi | null>(null);
     const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
     const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
-    const [autoScale, setAutoScale] = useState(true);
 
     const didSetInitialDataRef = useRef(false);
     const renderedCandleTimesRef = useRef<Set<number>>(new Set());
@@ -52,7 +51,7 @@ export function PriceChart({
 
         const chart = createChart(container, {
             width: container.clientWidth,
-            height: 400,
+            height: 668,
             layout: {
                 background: { type: ColorType.Solid, color: '#0d1117' },
                 textColor: '#555',
@@ -155,11 +154,14 @@ export function PriceChart({
         volumeSeriesRef.current?.setData([] as any);
     }, [interval, symbol]);
 
-    useEffect(() => {
-        const candleSeries = candleSeriesRef.current;
-        if (!candleSeries) return;
-        candleSeries.priceScale().applyOptions({ autoScale });
-    }, [autoScale]);
+    const handleAutoFit = () => {
+        const chart = chartRef.current;
+        if (!chart) return;
+
+        // Match TradingView-style auto fit: restore horizontal view and vertical autoscale.
+        candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+        chart.timeScale().fitContent();
+    };
 
     const intervals: TimeInterval[] = ['1m', '5m', '15m', '1h'];
     const showEmpty = !loading && candles.length === 0;
@@ -194,20 +196,18 @@ export function PriceChart({
                     ))}
                     <span className="w-px h-4 bg-white/10 mx-1" />
                     <button
-                        onClick={() => setAutoScale((prev) => !prev)}
-                        className={`px-2 py-0.5 text-xs rounded cursor-pointer transition ${
-                            autoScale ? 'bg-white/10 text-white' : 'text-gray-600 hover:text-gray-400'
-                        }`}
-                        title={autoScale ? 'Auto-scale enabled' : 'Auto-scale disabled'}
+                        onClick={handleAutoFit}
+                        className="px-2 py-0.5 text-xs rounded cursor-pointer transition text-gray-600 hover:text-gray-400"
+                        title="Auto fit data to screen"
                     >
-                        1D
+                        Auto
                     </button>
                 </div>
             </div>
 
             {/* Chart */}
             <div className="relative">
-                <div ref={chartContainerRef} className="h-[400px]" />
+                <div ref={chartContainerRef} className="h-[668px]" />
 
                 {loading && (
                     <div className="absolute inset-0 flex items-center justify-center text-gray-500 bg-[#0d1117]/80">
