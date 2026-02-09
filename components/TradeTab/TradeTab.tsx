@@ -7,7 +7,7 @@ interface TradeTableProps {
     setOpenMenu: (menu: string | null) => void;
     onTradeFormChange: (value: Partial<TradeFormState>) => void;
     tradeForm: TradeFormState;
-    onPositionSubmit: () => void;
+    onPositionSubmit: (submission: { orderType: 'market' | 'limit'; stopLossPrice: number | null }) => void;
     currentMarkPrice: number | null;
 }
 
@@ -19,6 +19,8 @@ export function TradeTab({
     currentMarkPrice
 }: TradeTableProps) {
     const [orderType, setOrderType] = useState<'Limit' | 'Market'>('Limit');
+    const [stopLossEnabled, setStopLossEnabled] = useState(false);
+    const [stopLossInput, setStopLossInput] = useState('');
     const [sizeUnitMenuOpen, setSizeUnitMenuOpen] = useState(false);
     const isLong = tradeForm.activeTradeTab === 'Long';
     const leverageOptions = [1, 2, 5, 10];
@@ -64,6 +66,21 @@ export function TradeTab({
             ? positionNotionalUsdc * feeRatePerSide * 2
             : null;
     const maxLossUsdc = marginRequiredUsdc;
+    const parsedStopLoss = Number(stopLossInput);
+    const stopLossPrice =
+        stopLossEnabled && Number.isFinite(parsedStopLoss) && parsedStopLoss > 0
+            ? parsedStopLoss
+            : null;
+    const handleSubmit = () => {
+        if (stopLossEnabled && stopLossPrice == null) {
+            alert('Enter a valid stop loss price');
+            return;
+        }
+        onPositionSubmit({
+            orderType: orderType === 'Market' ? 'market' : 'limit',
+            stopLossPrice,
+        });
+    };
 
     const formatDecimal = (value: number, decimals: number) => {
         if (!Number.isFinite(value)) return '';
@@ -191,6 +208,35 @@ export function TradeTab({
                 </div>
             </div>
 
+            {/* Stop Loss */}
+            <div className="mb-3">
+                <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] uppercase tracking-wider text-gray-500">Stop Loss</label>
+                    <button
+                        type="button"
+                        onClick={() => setStopLossEnabled((prev) => !prev)}
+                        className={`px-2 py-0.5 rounded text-[10px] transition cursor-pointer ${
+                            stopLossEnabled
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                : 'bg-white/5 text-gray-500 border border-white/10 hover:text-gray-300'
+                        }`}
+                    >
+                        {stopLossEnabled ? 'On' : 'Off'}
+                    </button>
+                </div>
+                <div className="flex items-center bg-white/5 border border-white/10 rounded px-3 py-2">
+                    <input
+                        type="text"
+                        disabled={!stopLossEnabled}
+                        className="min-w-0 flex-1 bg-transparent text-sm font-mono text-white outline-none disabled:text-gray-600"
+                        value={stopLossInput}
+                        onChange={(e) => setStopLossInput(e.target.value.replace(/[^0-9.]/g, ''))}
+                        placeholder={stopLossEnabled ? '0.0' : 'Enable to set stop loss'}
+                    />
+                    <span className="text-xs text-gray-500 ml-2">USDC</span>
+                </div>
+            </div>
+
             {/* Size */}
             <div className="mb-2">
                 <label className="text-[10px] uppercase tracking-wider text-gray-500 mb-1 block">Size</label>
@@ -313,18 +359,24 @@ export function TradeTab({
                     <span className="text-gray-500">Max Loss (est.)</span>
                     <span className="text-gray-300">{formatUsdc(maxLossUsdc)}</span>
                 </div>
+                <div className="flex justify-between">
+                    <span className="text-gray-500">Stop Loss</span>
+                    <span className="text-amber-300">
+                        {stopLossPrice != null ? `${formatPrice(stopLossPrice)} USDC` : '—'}
+                    </span>
+                </div>
             </div>
 
             {/* Submit */}
             <button
-                onClick={onPositionSubmit}
+                onClick={handleSubmit}
                 className={`w-full py-3 rounded text-sm font-semibold cursor-pointer transition ${
                     isLong
                         ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
                         : 'bg-rose-500/10 border border-rose-500/30 text-rose-400 hover:bg-rose-500/20'
                 }`}
             >
-                Open {isLong ? 'Long' : 'Short'}
+                {orderType === 'Market' ? 'Open' : 'Place'} {isLong ? 'Long' : 'Short'} {orderType}
             </button>
         </div>
     );

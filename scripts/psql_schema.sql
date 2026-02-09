@@ -66,6 +66,37 @@ CREATE TABLE IF NOT EXISTS paper_trades (
   closed_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS paper_orders (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  symbol VARCHAR(10) NOT NULL,
+  side VARCHAR(5) NOT NULL CHECK (side IN ('long', 'short')),
+  order_type VARCHAR(20) NOT NULL CHECK (order_type IN ('market', 'limit', 'stop_market')),
+  status VARCHAR(20) NOT NULL CHECK (status IN ('open', 'filled', 'canceled', 'rejected')),
+  position_size NUMERIC(20,6) NOT NULL,
+  leverage INTEGER NOT NULL CHECK (leverage >= 1 AND leverage <= 10),
+  reduce_only BOOLEAN NOT NULL DEFAULT FALSE,
+  limit_price NUMERIC(20,8),
+  stop_price NUMERIC(20,8),
+  attached_stop_loss_price NUMERIC(20,8),
+  margin_reserved NUMERIC(20,6) NOT NULL DEFAULT 0.000000,
+  linked_position_id INTEGER REFERENCES positions(id) ON DELETE SET NULL,
+  filled_price NUMERIC(20,8),
+  reject_reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  filled_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS paper_orders_user_status_idx
+  ON paper_orders (user_id, status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS paper_orders_symbol_status_idx
+  ON paper_orders (symbol, status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS paper_orders_position_idx
+  ON paper_orders (linked_position_id, status);
+
 CREATE TABLE IF NOT EXISTS balance_history (
   id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

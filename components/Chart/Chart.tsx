@@ -5,11 +5,14 @@ import {
     createChart,
     ColorType,
     IChartApi,
+    IPriceLine,
     ISeriesApi,
     CandlestickSeries,
     HistogramSeries,
+    LineStyle,
 } from 'lightweight-charts';
 import type { TimeInterval, CandleData } from '@/lib/chartUtils';
+import type { PaperOrder } from '@/lib/types';
 
 interface PriceChartProps {
     candles: CandleData[];
@@ -18,6 +21,7 @@ interface PriceChartProps {
     interval: TimeInterval;
     onIntervalChange: (interval: TimeInterval) => void;
     markPrice: number | null;
+    openOrders: PaperOrder[];
 }
 
 export function PriceChart({
@@ -27,12 +31,14 @@ export function PriceChart({
     interval,
     onIntervalChange,
     markPrice,
+    openOrders,
 }: PriceChartProps) {
     const chartContainerRef = useRef<HTMLDivElement>(null);
 
     const chartRef = useRef<IChartApi | null>(null);
     const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
     const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+    const orderLinesRef = useRef<Map<number, IPriceLine>>(new Map());
 
     const didSetInitialDataRef = useRef(false);
     const renderedCandleTimesRef = useRef<Set<number>>(new Set());
@@ -99,6 +105,13 @@ export function PriceChart({
         window.addEventListener('resize', handleResize);
 
         return () => {
+            const candleSeries = candleSeriesRef.current;
+            if (candleSeries) {
+                orderLinesRef.current.forEach((line) => {
+                    candleSeries.removePriceLine(line);
+                });
+                orderLinesRef.current.clear();
+            }
             window.removeEventListener('resize', handleResize);
             chart.remove();
             chartRef.current = null;
@@ -153,6 +166,34 @@ export function PriceChart({
         candleSeriesRef.current?.setData([] as any);
         volumeSeriesRef.current?.setData([] as any);
     }, [interval, symbol]);
+
+    useEffect(() => {
+        const candleSeries = candleSeriesRef.current;
+        if (!candleSeries) return;
+
+        orderLinesRef.current.forEach((line) => {
+            candleSeries.removePriceLine(line);
+        });
+        orderLinesRef.current.clear();
+
+        const visibleOrders = openOrders.filter((order) => order.status === 'open');
+        for (const order of visibleOrders) {
+            const price = order.orderType === 'limit' ? order.limitPrice : order.stopPrice;
+            if (price == null || !Number.isFinite(price) || price <= 0) continue;
+
+            const isStop = order.orderType === 'stop_market';
+            const line = candleSeries.createPriceLine({
+                price,
+                color: isStop ? '#f59e0b' : (order.side === 'long' ? '#22c55e' : '#ef4444'),
+                lineWidth: 1,
+                lineStyle: LineStyle.Dotted,
+                axisLabelVisible: true,
+                title: isStop ? 'Stop' : 'Limit',
+            });
+
+            orderLinesRef.current.set(order.id, line);
+        }
+    }, [openOrders, symbol]);
 
     const handleAutoFit = () => {
         const chart = chartRef.current;

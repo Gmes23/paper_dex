@@ -311,6 +311,7 @@ const handleIntervalChange = (next: TimeInterval) => {
           interval={interval}
           onIntervalChange={handleIntervalChange}
           markPrice={null}
+          openOrders={[]}
         />
 
         {/* Recent Trades Table */}

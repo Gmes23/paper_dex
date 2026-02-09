@@ -176,6 +176,19 @@ export async function POST(req: Request) {
     );
 
     await client.query('DELETE FROM positions WHERE id = $1', [positionId]);
+    await client.query(
+      `
+      UPDATE paper_orders
+      SET status = 'canceled',
+          reject_reason = 'Position closed manually',
+          updated_at = NOW()
+      WHERE user_id = $1
+        AND linked_position_id = $2
+        AND order_type = 'stop_market'
+        AND status = 'open'
+      `,
+      [payload.sub, positionId]
+    );
     await client.query('COMMIT');
 
     return NextResponse.json({

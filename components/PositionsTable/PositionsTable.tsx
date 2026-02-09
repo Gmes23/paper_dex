@@ -1,25 +1,30 @@
 import { useState } from 'react';
-import type { PaperPosition, PaperTrade } from '@/lib/types';
+import type { PaperOrder, PaperPosition, PaperTrade } from '@/lib/types';
 import { PastTradesTable } from '@/components/PositionsTable/PastTradesTable';
+import { OpenOrdersTable } from '@/components/PositionsTable/OpenOrdersTable';
 
 interface PositionsTableProps {
     userPositions: PaperPosition[];
     pastTrades: PaperTrade[];
+    openOrders: PaperOrder[];
     getMarkPriceForSymbol: (symbol: string) => number | null;
     onClosePosition: (id: number) => void;
+    onCancelOrder: (id: number) => void;
 }
 
 export function PositionsTable({
     userPositions,
     pastTrades,
+    openOrders,
     getMarkPriceForSymbol,
-    onClosePosition
+    onClosePosition,
+    onCancelOrder
 }: PositionsTableProps) {
     const [activeTab, setActiveTab] = useState('positions');
 
     const tabs = [
         { id: 'positions', label: 'Positions', count: userPositions.length },
-        { id: 'orders', label: 'Orders', count: 0 },
+        { id: 'orders', label: 'Orders', count: openOrders.length },
         { id: 'trades', label: 'Trades' },
     ];
 
@@ -127,11 +132,7 @@ export function PositionsTable({
 
             {showTrades ? <PastTradesTable trades={pastTrades} /> : null}
 
-            {showOrders ? (
-                <div className="py-6 text-center text-xs text-gray-600">
-                    No open orders
-                </div>
-            ) : null}
+            {showOrders ? <OpenOrdersTable orders={openOrders} onCancelOrder={onCancelOrder} /> : null}
         </div>
     );
 }

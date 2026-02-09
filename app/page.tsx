@@ -16,6 +16,7 @@ import { useOrderBookState } from '@/hooks/useOrderBookState';
 import { useTrades } from '@/hooks/useTrades';
 import { usePaperPositions } from '@/hooks/usePaperPositions';
 import { usePaperTrades } from '@/hooks/usePaperTrades';
+import { usePaperOrders } from '@/hooks/usePaperOrders';
 import { useWalletAuth } from '@/hooks/useWalletAuth';
 import { useChartData } from '@/hooks/useChartData';
 
@@ -148,8 +149,16 @@ export default function OrderBook() {
   });
 
   const { user, refresh: refreshUser } = useWalletAuth();
-  const { positions, openPosition, closePosition } = usePaperPositions();
+  const { positions, refresh: refreshPositions, closePosition } = usePaperPositions();
   const { trades: pastTrades, refresh: refreshPastTrades } = usePaperTrades();
+  const {
+    openOrders,
+    refreshOpenOrders,
+    placeOrder,
+    cancelOrder,
+    matchOrders,
+  } = usePaperOrders();
+  const symbolOpenOrders = openOrders.filter((order) => order.symbol === symbol);
   const [markPriceBySymbol, setMarkPriceBySymbol] = useState<Record<string, number>>({});
 
   useEffect(() => {
@@ -161,8 +170,11 @@ export default function OrderBook() {
   }, [markPrice, symbol]);
 
   useEffect(() => {
-    const symbolsInPositions = Array.from(new Set(positions.map((position) => position.symbol)));
-    const symbolsToFetch = symbolsInPositions.filter((positionSymbol) => positionSymbol !== symbol);
+    const symbolsInContext = Array.from(new Set([
+      ...positions.map((position) => position.symbol),
+      ...openOrders.map((order) => order.symbol),
+    ]));
+    const symbolsToFetch = symbolsInContext.filter((trackedSymbol) => trackedSymbol !== symbol);
     if (symbolsToFetch.length === 0) return;
 
     let cancelled = false;
@@ -202,7 +214,7 @@ export default function OrderBook() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [positions, symbol]);
+  }, [openOrders, positions, symbol]);
 
   const getMarkPriceForSymbol = useCallback(
     (positionSymbol: string) => {
@@ -212,7 +224,7 @@ export default function OrderBook() {
     [markPrice, markPriceBySymbol, symbol]
   );
 
-  const addPosition = useCallback(async () => {
+  const addPosition = useCallback(async (submission: { orderType: 'market' | 'limit'; stopLossPrice: number | null }) => {
     const rawSize = Number(tradeForm.size);
     const inputPrice = Number(tradeForm.inputPrice);
     const referencePrice =
@@ -232,19 +244,42 @@ export default function OrderBook() {
       alert('Price unavailable. Please enter a valid price.');
       return;
     }
+    if (submission.orderType === 'limit' && (!Number.isFinite(inputPrice) || inputPrice <= 0)) {
+      alert('Enter a valid limit price');
+      return;
+    }
 
     try {
-      await openPosition({
+      await placeOrder({
         symbol,
         side: tradeForm.activeTradeTab === 'Long' ? 'long' : 'short',
+        orderType: submission.orderType,
         positionSize,
         leverage: tradeForm.leverage,
+        limitPrice: submission.orderType === 'limit' ? inputPrice : undefined,
+        stopLossPrice: submission.stopLossPrice,
       });
-      await refreshUser();
+      await Promise.all([
+        refreshPositions(),
+        refreshOpenOrders(),
+        refreshUser(),
+      ]);
     } catch (err) {
-      alert((err as Error).message ?? 'Failed to open position');
+      alert((err as Error).message ?? 'Failed to place order');
     }
-  }, [markPrice, openPosition, refreshUser, symbol, tradeForm.activeTradeTab, tradeForm.inputPrice, tradeForm.leverage, tradeForm.size, tradeForm.tradeAsset]);
+  }, [
+    markPrice,
+    placeOrder,
+    refreshOpenOrders,
+    refreshPositions,
+    refreshUser,
+    symbol,
+    tradeForm.activeTradeTab,
+    tradeForm.inputPrice,
+    tradeForm.leverage,
+    tradeForm.size,
+    tradeForm.tradeAsset,
+  ]);
 
   useEffect(() => {
     bestBidRef.current = bestBid;
@@ -261,6 +296,52 @@ export default function OrderBook() {
 
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const symbolsWithActivity = Array.from(new Set([
+      ...openOrders.map((order) => order.symbol),
+      ...positions.map((position) => position.symbol),
+    ]));
+    if (symbolsWithActivity.length === 0) return;
+
+    let cancelled = false;
+
+    const runMatch = async () => {
+      try {
+        const results = await Promise.all(
+          symbolsWithActivity
+            .map((orderSymbol) => {
+              const price = orderSymbol === symbol ? markPrice : markPriceBySymbol[orderSymbol] ?? null;
+              if (price == null || !Number.isFinite(price) || price <= 0) return null;
+              return matchOrders(orderSymbol, price);
+            })
+            .filter((entry): entry is Promise<{ matched: number; triggeredStops: number; liquidated: number; rejected: number }> => entry != null)
+        );
+
+        if (cancelled) return;
+        const hasChanges = results.some(
+          (result) => result.matched > 0 || result.rejected > 0 || result.liquidated > 0
+        );
+        if (hasChanges) {
+          await Promise.all([
+            refreshPositions(),
+            refreshPastTrades(),
+            refreshOpenOrders(),
+            refreshUser(),
+          ]);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.warn('Failed to match paper orders', err);
+        }
+      }
+    };
+
+    void runMatch();
+    return () => {
+      cancelled = true;
+    };
+  }, [markPrice, markPriceBySymbol, matchOrders, openOrders, positions, refreshOpenOrders, refreshPastTrades, refreshPositions, refreshUser, symbol]);
 
   useEffect(() => {
     let cancelled = false;
@@ -328,20 +409,37 @@ export default function OrderBook() {
             interval={interval}
             onIntervalChange={setChartInterval}
             markPrice={markPrice}
+            openOrders={symbolOpenOrders}
           />
 
           <div className="rounded-xl border border-white/10 overflow-hidden">
             <PositionsTable
               userPositions={positions}
               pastTrades={pastTrades}
+              openOrders={openOrders}
               getMarkPriceForSymbol={getMarkPriceForSymbol}
               onClosePosition={async (id) => {
                 try {
                   await closePosition(id);
-                  await refreshPastTrades();
-                  await refreshUser();
+                  await Promise.all([
+                    refreshPositions(),
+                    refreshPastTrades(),
+                    refreshOpenOrders(),
+                    refreshUser(),
+                  ]);
                 } catch (err) {
                   alert((err as Error).message ?? 'Failed to close position');
+                }
+              }}
+              onCancelOrder={async (id) => {
+                try {
+                  await cancelOrder(id);
+                  await Promise.all([
+                    refreshOpenOrders(),
+                    refreshUser(),
+                  ]);
+                } catch (err) {
+                  alert((err as Error).message ?? 'Failed to cancel order');
                 }
               }}
             />

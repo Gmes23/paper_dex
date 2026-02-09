@@ -85,6 +85,30 @@ export interface PaperTrade {
   openedAt: string;
   closedAt: string;
 }
+
+export type PaperOrderType = 'market' | 'limit' | 'stop_market';
+export type PaperOrderStatus = 'open' | 'filled' | 'canceled' | 'rejected';
+
+export interface PaperOrder {
+  id: number;
+  symbol: string;
+  side: 'long' | 'short';
+  orderType: PaperOrderType;
+  status: PaperOrderStatus;
+  positionSize: number;
+  leverage: number;
+  reduceOnly: boolean;
+  limitPrice: number | null;
+  stopPrice: number | null;
+  attachedStopLossPrice: number | null;
+  marginReserved: number;
+  linkedPositionId: number | null;
+  filledPrice: number | null;
+  rejectReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  filledAt: string | null;
+}
   
   export type Symbol = 'BTC' | 'ETH' | 'BTC_MOCK';
   export type Tab = 'orderbook' | 'trades';
