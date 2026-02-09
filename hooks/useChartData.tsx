@@ -17,11 +17,16 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Track last candle time we trust (seconds)
   const lastCandleTimeRef = useRef<number | null>(null);
+  const tradesRef = useRef<ProcessedTrade[]>(trades);
 
   // Track the last trade time (ms) we've already processed
   const lastProcessedTradeTimeMsRef = useRef<number>(0);
+  const latestTradeId = trades[0]?.id ?? null;
+
+  useEffect(() => {
+    tradesRef.current = trades;
+  }, [trades]);
 
   // Reset when symbol/interval changes
   useEffect(() => {
@@ -30,7 +35,6 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
     lastCandleTimeRef.current = null;
   }, [symbol, interval]);
 
-  // 1️⃣ Load historical candles from DB
   useEffect(() => {
     const controller = new AbortController();
     let cancelled = false;
@@ -57,13 +61,13 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
         const last = data.length > 0 ? data[data.length - 1].time : null;
         lastCandleTimeRef.current = last;
 
-        console.info('📦 Loaded DB candles', {
+        console.info('Loaded DB candles', {
           count: data.length,
           lastCandleTime: last,
         });
       } catch (err) {
         if (cancelled) return;
-        if ((err as any)?.name === 'AbortError') return;
+        if (err instanceof DOMException && err.name === 'AbortError') return;
 
         setError(err instanceof Error ? err.message : 'Failed to load candles');
       } finally {
@@ -81,9 +85,14 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
 
   // 2️⃣ Merge realtime trades into candles (incremental)
   useEffect(() => {
+    const currentTrades = tradesRef.current;
     if (loading) return;
-    if (trades.length === 0) {
-      lastProcessedTradeTimeMsRef.current = 0;
+    if (currentTrades.length === 0) {
+      return;
+    }
+
+    const newestTradeTimeMs = Number(currentTrades[0]?.timeMs ?? 0);
+    if (Number.isFinite(newestTradeTimeMs) && newestTradeTimeMs <= lastProcessedTradeTimeMsRef.current) {
       return;
     }
 
@@ -91,16 +100,20 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
       ? lastCandleTimeRef.current * 1000
       : null;
 
-    const newTrades = trades.filter(
-      (trade) =>
-        Number.isFinite(trade.timeMs) &&
-        trade.timeMs > lastProcessedTradeTimeMsRef.current
-    );
+    // Trades are kept newest-first, so we can stop scanning as soon as we hit already-processed time.
+    const newTradesDesc: ProcessedTrade[] = [];
+    let maxTradeTimeMs = lastProcessedTradeTimeMsRef.current;
+    for (const trade of currentTrades) {
+      if (!Number.isFinite(trade.timeMs)) continue;
+      if (trade.timeMs <= lastProcessedTradeTimeMsRef.current) break;
+      newTradesDesc.push(trade);
+      if (trade.timeMs > maxTradeTimeMs) maxTradeTimeMs = trade.timeMs;
+    }
 
-    if (newTrades.length === 0) return;
+    if (newTradesDesc.length === 0) return;
 
-    const maxTradeTimeMs = Math.max(...newTrades.map((t) => t.timeMs));
     lastProcessedTradeTimeMsRef.current = maxTradeTimeMs;
+    const newTrades = [...newTradesDesc].reverse();
 
     const filteredTrades = lastCandleTimeMs
       ? newTrades.filter((trade) => trade.timeMs >= lastCandleTimeMs)
@@ -118,13 +131,13 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
 
     console.info('🔄 Processing realtime trades', {
       newTrades: newTrades.length,
-      totalTrades: trades.length,
+      totalTrades: currentTrades.length,
       lastCandleTimeMs,
       maxTradeTimeMs,
     });
 
     const intervalMs = getIntervalMs(interval);
-    const sortedTrades = [...filteredTrades].sort((a, b) => a.timeMs - b.timeMs);
+    const sortedTrades = filteredTrades;
 
     setCandles((prev) => {
       const next = [...prev];
@@ -195,9 +208,8 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
 
       return next;
     });
-  }, [trades, interval, loading]);
+  }, [latestTradeId, interval, loading]);
 
-  // 3️⃣ Manual refresh (DB only)
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -219,11 +231,11 @@ export function useChartData({ symbol, interval, trades }: UseChartDataProps) {
 
       const last = data.length > 0 ? data[data.length - 1].time : null;
       lastCandleTimeRef.current = last;
-      lastProcessedTradeTimeMsRef.current = 0; // Reset trade counter on refresh
+      lastProcessedTradeTimeMsRef.current = 0; 
 
       console.info('🔄 Refreshed DB candles', { count: data.length });
     } catch (err) {
-      if ((err as any)?.name === 'AbortError') return;
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : 'Failed to refresh');
     } finally {
       setLoading(false);

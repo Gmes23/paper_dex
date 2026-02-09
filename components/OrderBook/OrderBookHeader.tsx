@@ -34,7 +34,7 @@ export function OrderBookHeader({
   const groupOptions = symbol === 'BTC' ? BTC_GROUP_OPTIONS : ETH_GROUP_OPTIONS;
 
   return (
-    <div className="bg-[#131722] rounded-lg p-4 mb-4">
+    <div className="glass-panel rounded-2xl p-4">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center font-bold">
@@ -43,7 +43,7 @@ export function OrderBookHeader({
           
           <div>
             <div className="font-semibold">{symbol}-USD</div>
-            <div className="text-xs text-gray-500">Perpetuals</div>
+            <div className="text-xs muted-text">Perpetuals</div>
           </div>
         </div>
 
@@ -87,7 +87,7 @@ export function OrderBookHeader({
       </div>
 
       {/* Tab Selector */}
-      <div className="flex items-center justify-between border-b border-gray-800">
+      <div className="flex items-center justify-between border-b border-white/10">
         <TabSelector
           tabs={[
             { id: 'orderbook', label: 'Orders' },
@@ -104,7 +104,7 @@ export function OrderBookHeader({
             className={`px-2 py-1 text-xs rounded transition-colors cursor-pointer active:scale-[0.97] ${
               denomination === 'asset'
                 ? 'bg-orange-500 text-white'
-                : 'bg-[#1e222d] text-gray-400 hover:text-white'
+                : 'glass-button text-gray-300 hover:text-white'
             }`}
           >
             {symbol}
@@ -114,7 +114,7 @@ export function OrderBookHeader({
             className={`px-2 py-1 text-xs rounded transition-colors cursor-pointer active:scale-[0.97] ${
               denomination === 'usdc'
                 ? 'bg-orange-500 text-white'
-                : 'bg-[#1e222d] text-gray-400 hover:text-white'
+                : 'glass-button text-gray-300 hover:text-white'
             }`}
           >
             USDC

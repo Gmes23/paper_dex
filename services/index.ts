@@ -1,16 +1,17 @@
 import { CandleAggregator } from '@/services/candleAggregator';
 import { HyperliquidWebSocketService } from '@/services/websocketService';
-import { startLiquidationService } from '@/services/liquidationService';
+import { startLiquidationService, type LiquidationServiceHandle } from '@/services/liquidationService';
 
 type ServicesState = {
   started: boolean;
-  aggregator: CandleAggregator;
-  websocket: HyperliquidWebSocketService;
+  aggregator: CandleAggregator | null;
+  websocket: HyperliquidWebSocketService | null;
+  liquidation: LiquidationServiceHandle;
+  liveIngestionEnabled: boolean;
   startedAt: number;
 };
 
 declare global {
-  // eslint-disable-next-line no-var
   var __servicesState: ServicesState | undefined;
 }
 
@@ -35,24 +36,39 @@ export function initializeServices() {
     hasDatabaseUrl: Boolean(process.env.DATABASE_URL),
   });
 
-  const flushIntervalMs = Number(process.env.CANDLE_FLUSH_INTERVAL_MS ?? 5000);
-  const aggregator = new CandleAggregator({
-    flushIntervalMs: Number.isFinite(flushIntervalMs) ? flushIntervalMs : 5000,
-  });
-  const websocket = new HyperliquidWebSocketService({
-    symbols: parseSymbols(),
-    aggregator,
-  });
+  const wsSource = (process.env.NEXT_PUBLIC_WS_SOURCE ?? 'mock').toLowerCase();
+  const liveIngestionEnabled = wsSource === 'live';
 
-  aggregator.start();
-  websocket.connect();
-  startLiquidationService();
+  let aggregator: CandleAggregator | null = null;
+  let websocket: HyperliquidWebSocketService | null = null;
+
+  if (liveIngestionEnabled) {
+    const flushIntervalMs = Number(process.env.CANDLE_FLUSH_INTERVAL_MS ?? 5000);
+    aggregator = new CandleAggregator({
+      flushIntervalMs: Number.isFinite(flushIntervalMs) ? flushIntervalMs : 5000,
+    });
+    websocket = new HyperliquidWebSocketService({
+      symbols: parseSymbols(),
+      aggregator,
+    });
+
+    aggregator.start();
+    websocket.connect();
+  } else {
+    console.log('[Services] Live websocket ingestion disabled', { wsSource });
+  }
+
+  const liquidation = startLiquidationService();
 
   const shutdown = async () => {
     console.log('[Services] Shutting down...');
-    websocket.disconnect();
-    aggregator.stop();
-    await aggregator.flushCandles('shutdown');
+    liquidation.stop();
+
+    if (websocket) websocket.disconnect();
+    if (aggregator) {
+      aggregator.stop();
+      await aggregator.flushCandles('shutdown');
+    }
   };
 
   process.once('SIGTERM', () => {
@@ -66,6 +82,8 @@ export function initializeServices() {
     started: true,
     aggregator,
     websocket,
+    liquidation,
+    liveIngestionEnabled,
     startedAt: Date.now(),
   };
 }

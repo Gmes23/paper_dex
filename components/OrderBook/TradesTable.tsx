@@ -5,9 +5,10 @@ interface TradesTableProps {
   trades: ProcessedTrade[];
   denomination: Denomination;
   symbol: Symbol;
+  onToggleDenomination: () => void;
 }
 
-export function TradesTable({ trades, denomination, symbol }: TradesTableProps) {
+export function TradesTable({ trades, denomination, symbol, onToggleDenomination }: TradesTableProps) {
   const denomLabel = getDenomLabel(denomination, symbol);
 
   const getTradeHeight = (trade: ProcessedTrade): string => {
@@ -23,22 +24,29 @@ export function TradesTable({ trades, denomination, symbol }: TradesTableProps) 
 
 
   return (
-    <div className="bg-[#131722] rounded-lg overflow-hidden">
+    <div className="flex flex-col h-full">
       {/* Headers */}
-      <div className="grid grid-cols-3 gap-2 px-4 py-2 text-xs text-gray-500 border-b border-gray-800">
+      <div className="grid grid-cols-3 px-3 py-1.5 text-[10px] uppercase tracking-wider text-gray-500 border-b border-white/5">
         <div className="text-left">Price</div>
-        <div className="text-center">Size ({denomLabel})</div>
+        <button
+          type="button"
+          onClick={onToggleDenomination}
+          className="text-right text-gray-400 hover:text-white transition cursor-pointer"
+          title="Toggle size denomination"
+        >
+          ({denomLabel}) Size
+        </button>
         <div className="text-right">Time</div>
       </div>
 
       {/* Trades List */}
       <div className={`
-      h-[32.875rem]
+      h-[43.375rem]
       overflow-y-auto
       `}>
         {trades.map((trade) => (
 
-            <div key={trade.id} className={`${trade.side === 'buy' ? 'bg-green-400' : 'bg-rose-400' } text-black`}>
+            <div key={trade.id} className={`${trade.side === 'buy' ? 'bg-green-500' : 'bg-red-300' } text-black`}>
           <div
             key={trade.id}
             className={`grid grid-cols-3 gap-2 px-4 py-1.5 text-sm hover:bg-[#1e222d] transition-colors
@@ -48,17 +56,17 @@ export function TradesTable({ trades, denomination, symbol }: TradesTableProps) 
           >
             <div
               className={`font-mono text-left 
-                text-black
+                text-xs text-black
               `}
             >
               {trade.price}
             </div>
 
-            <div className="text-center text-black-300 font-mono">
+            <div className="text-right text-black-300 font-mono text-xs">
               {formatSize(trade.size, trade.sizeUsdc, denomination)}
             </div>
 
-            <div className="text-right text-black-500 text-md">
+            <div className="text-right text-black-500 text-xs">
               {trade.time}
             </div>
           </div>

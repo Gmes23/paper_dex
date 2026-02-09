@@ -16,6 +16,7 @@ type AuthUser = {
 
 const TOKEN_KEY = 'auth_token';
 const MESSAGE_PREFIX = 'Sign this message to authenticate. Nonce:';
+const AUTH_CHANGED_EVENT = 'auth_state_changed';
 
 function formatAddress(address: string) {
   if (!address) return '';
@@ -29,7 +30,11 @@ export function useWalletAuth() {
 
   const loadSession = useCallback(async () => {
     const token = typeof window !== 'undefined' ? localStorage.getItem(TOKEN_KEY) : null;
-    if (!token) return;
+    if (!token) {
+      setUser(null);
+      setAddress(null);
+      return;
+    }
 
     try {
       const res = await apiFetch('/api/auth/me');
@@ -47,6 +52,25 @@ export function useWalletAuth() {
 
   useEffect(() => {
     void loadSession();
+  }, [loadSession]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== TOKEN_KEY) return;
+      void loadSession();
+    };
+
+    const handleAuthChanged = () => {
+      void loadSession();
+    };
+
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener(AUTH_CHANGED_EVENT, handleAuthChanged);
+
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener(AUTH_CHANGED_EVENT, handleAuthChanged);
+    };
   }, [loadSession]);
 
   const connectWallet = useCallback(async () => {
@@ -67,6 +91,7 @@ export function useWalletAuth() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ walletAddress }),
       });
+      
       if (!nonceRes.ok) throw new Error('Failed to get nonce');
       const { nonce } = await nonceRes.json();
 
@@ -84,6 +109,7 @@ export function useWalletAuth() {
       localStorage.setItem(TOKEN_KEY, data.token);
       setUser(data.user);
       setAddress(data.user.walletAddress);
+      window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
       return true;
     } catch (err) {
       console.error('Wallet connection failed', err);
@@ -97,6 +123,7 @@ export function useWalletAuth() {
     localStorage.removeItem(TOKEN_KEY);
     setUser(null);
     setAddress(null);
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
   }, []);
 
   return {

@@ -26,91 +26,73 @@ export function OrderBookTable({
     error,
     onPriceSelect
 }: OrderBookTableProps) {
-    const denomLabel = getDenomLabel(denomination, symbol);
-
     if (error) {
         return (
-            <div className="min-h-screen bg-[#0a0e13] text-white p-4">
-                <div className="max-w-md mx-auto">
-                    <div className="bg-red-500/10 border border-red-500 rounded-lg p-4 text-center">
-                        <p className="text-red-500 font-semibold">⚠️ Error</p>
-                        <p className="text-gray-300 text-sm mt-2">{error}</p>
-                        <button
-                            onClick={() => window.location.reload()}
-                            className="mt-4 px-4 py-2 bg-red-500 rounded hover:bg-red-600"
-                        >
-                            Reload Page
-                        </button>
-                    </div>
-                </div>
+            <div className="p-4 text-center">
+                <p className="text-red-500 text-sm">{error}</p>
+                <button
+                    onClick={() => window.location.reload()}
+                    className="mt-2 px-3 py-1 text-xs rounded bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                >
+                    Reload
+                </button>
             </div>
         )
     }
 
     return (
-        <div className="bg-[#131722] rounded-lg overflow-hidden">
-            {/* Headers */}
-            <div className="grid grid-cols-6 gap-2 px-4 py-2 text-xs text-gray-500 border-b border-gray-800">
+        <div className="flex flex-col h-full">
+            {/* Column headers */}
+            <div className="grid grid-cols-3 px-3 py-1 text-[10px] uppercase tracking-wider text-gray-500 border-b border-white/5">
                 <div className="text-left">Price</div>
-                <div className="text-center">Size ({denomLabel})</div>
-                <div className="text-right">Total ({denomLabel})</div>
-
-                <div className="text-left">Price</div>
-                <div className="text-center">Size ({denomLabel})</div>
-                <div className="text-right">Total ({denomLabel})</div>
+                <div className="text-right">Size</div>
+                <div className="text-right">Total</div>
             </div>
 
-            {/* Asks */}
+            {/* Asks - reversed so lowest ask is at bottom (closest to spread) */}
+            <div className="flex flex-col">
+                {[...fixedAsks].reverse().map((ask, index) => {
+                    const depthValue = ask
+                        ? (denomination === 'asset' ? ask.total : ask.totalUsdc)
+                        : 0;
+                    const depthPercentage = maxAskTotal > 0 ? (depthValue / maxAskTotal) * 100 : 0;
 
-
-            <div className="grid grid-cols-2 gap-4">
-                <div className="relative">
-                    {fixedAsks.map((ask, index) => {
-                        const depthValue = ask
-                            ? (denomination === 'asset' ? ask.total : ask.totalUsdc)
-                            : 0;
-                        const depthPercentage = maxAskTotal > 0 ? (depthValue / maxAskTotal) * 100 : 0;
-
-                        return (
-                            <OrderBookRow
-                                key={`ask-row-${index}`}
-                                level={ask}
-                                side="ask"
-                                depthPercentage={depthPercentage}
-                                denomination={denomination}
-                                displaySide="left-0"
-                                onClick={(price) => onPriceSelect?.(price)}
-                            />
-                        );
-                    })}
-                </div>
-
-
-                {/* Bids */}
-                <div className="relative">
-                    {fixedBids.map((bid, index) => {
-                        const depthValue = bid
-                            ? (denomination === 'asset' ? bid.total : bid.totalUsdc)
-                            : 0;
-                        const depthPercentage = maxBidTotal > 0 ? (depthValue / maxBidTotal) * 100 : 0;
-
-                        return (
-                            <OrderBookRow
-                                key={`bid-row-${index}`}
-                                level={bid}
-                                side="bid"
-                                depthPercentage={depthPercentage}
-                                denomination={denomination}
-                                displaySide='right-0'
-                                onClick={(price) => onPriceSelect?.(price)}
-                            />
-                        );
-                    })}
-                </div>
+                    return (
+                        <OrderBookRow
+                            key={`ask-row-${index}`}
+                            level={ask}
+                            side="ask"
+                            depthPercentage={depthPercentage}
+                            denomination={denomination}
+                            onClick={(price) => onPriceSelect?.(price)}
+                        />
+                    );
+                })}
             </div>
 
             {/* Spread */}
             <SpreadIndicator spread={spread} />
+
+            {/* Bids */}
+            <div className="flex flex-col">
+                {fixedBids.map((bid, index) => {
+                    const depthValue = bid
+                        ? (denomination === 'asset' ? bid.total : bid.totalUsdc)
+                        : 0;
+                    const depthPercentage = maxBidTotal > 0 ? (depthValue / maxBidTotal) * 100 : 0;
+
+                    return (
+                        <OrderBookRow
+                            key={`bid-row-${index}`}
+                            level={bid}
+                            side="bid"
+                            depthPercentage={depthPercentage}
+                            denomination={denomination}
+                            onClick={(price) => onPriceSelect?.(price)}
+                        />
+                    );
+                })}
+            </div>
         </div>
     );
 }

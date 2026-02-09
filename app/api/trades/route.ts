@@ -3,6 +3,15 @@ import { createPgClient } from '@/lib/pgClient';
 import type { TradeData } from '@/lib/types';
 
 type TradeInsert = TradeData & { source?: string };
+type NormalizedTrade = {
+  hash: string;
+  symbol: string;
+  side: 'B' | 'A';
+  price: number;
+  size: number;
+  timeMs: number;
+};
+
 type CandleRow = {
   symbol: string;
   time: number;
@@ -13,17 +22,17 @@ type CandleRow = {
   volume: number;
 };
 
-function buildOneMinuteCandles(trades: TradeInsert[]): CandleRow[] {
+function buildOneMinuteCandles(trades: NormalizedTrade[]): CandleRow[] {
   if (trades.length === 0) return [];
 
-  const sorted = [...trades].sort((a, b) => Number(a.time) - Number(b.time));
+  const sorted = [...trades].sort((a, b) => a.timeMs - b.timeMs);
   const buckets = new Map<string, CandleRow>();
 
   for (const trade of sorted) {
-    const symbol = (trade.coin ?? '').toUpperCase();
-    const price = Number(trade.px);
-    const size = Number(trade.sz);
-    const timeMs = Number(trade.time);
+    const symbol = trade.symbol;
+    const price = trade.price;
+    const size = trade.size;
+    const timeMs = trade.timeMs;
 
     if (!symbol || !Number.isFinite(price) || !Number.isFinite(size) || !Number.isFinite(timeMs)) {
       continue;
@@ -110,14 +119,7 @@ export async function POST(req: Request) {
   await client.connect();
 
   try {
-    const insertQuery = `
-      INSERT INTO trades (trade_id, symbol, side, price, size, time_ms, source)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      ON CONFLICT (symbol, trade_id) DO NOTHING;
-    `;
-
-    let inserted = 0;
-    const insertedTrades: TradeInsert[] = [];
+    const normalizedTrades: NormalizedTrade[] = [];
     for (const trade of trades) {
       if (!trade?.coin || !trade?.hash) continue;
 
@@ -131,33 +133,68 @@ export async function POST(req: Request) {
         continue;
       }
 
-      const res = await client.query(insertQuery, [
-        trade.hash,
+      normalizedTrades.push({
+        hash: trade.hash,
         symbol,
         side,
         price,
         size,
         timeMs,
-        source,
-      ]);
-
-      const rowCount = res.rowCount ?? 0;
-      inserted += rowCount;
-      if (rowCount > 0) insertedTrades.push(trade);
+      });
     }
 
-    const candles = buildOneMinuteCandles(insertedTrades);
+    if (normalizedTrades.length === 0) {
+      return NextResponse.json({ inserted: 0, candlesUpserted: 0 });
+    }
+
+    const values: Array<string | number> = [];
+    const rows: string[] = [];
+
+    normalizedTrades.forEach((trade, index) => {
+      const base = index * 7;
+      rows.push(
+        `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`
+      );
+      values.push(trade.hash, trade.symbol, trade.side, trade.price, trade.size, trade.timeMs, source);
+    });
+
+    const insertQuery = `
+      INSERT INTO trades (trade_id, symbol, side, price, size, time_ms, source)
+      VALUES ${rows.join(', ')}
+      ON CONFLICT (symbol, trade_id) DO NOTHING
+      RETURNING trade_id, symbol, side, price, size, time_ms;
+    `;
+    const insertedRes = await client.query<{
+      trade_id: string;
+      symbol: string;
+      side: 'B' | 'A';
+      price: string;
+      size: string;
+      time_ms: number;
+    }>(insertQuery, values);
+    const inserted = insertedRes.rowCount ?? 0;
+
+    const shouldUpsertCandles = source === 'mock';
+    const insertedTrades: NormalizedTrade[] = insertedRes.rows.map((row) => ({
+      hash: row.trade_id,
+      symbol: row.symbol,
+      side: row.side,
+      price: Number(row.price),
+      size: Number(row.size),
+      timeMs: Number(row.time_ms),
+    }));
+    const candles = shouldUpsertCandles ? buildOneMinuteCandles(insertedTrades) : [];
 
     if (candles.length > 0) {
-      const values: Array<string | number> = [];
-      const rows: string[] = [];
+      const candleValues: Array<string | number> = [];
+      const candleRows: string[] = [];
 
       candles.forEach((candle, index) => {
         const base = index * 7;
-        rows.push(
+        candleRows.push(
           `($${base + 1}, '1m', $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`
         );
-        values.push(
+        candleValues.push(
           candle.symbol,
           candle.time,
           candle.open,
@@ -170,7 +207,7 @@ export async function POST(req: Request) {
 
       const candleQuery = `
         INSERT INTO candles (symbol, interval, time, open, high, low, close, volume)
-        VALUES ${rows.join(', ')}
+        VALUES ${candleRows.join(', ')}
         ON CONFLICT (symbol, interval, time) DO UPDATE SET
           high = GREATEST(candles.high, EXCLUDED.high),
           low = LEAST(candles.low, EXCLUDED.low),
@@ -179,7 +216,7 @@ export async function POST(req: Request) {
           updated_at = NOW();
       `;
 
-      await client.query(candleQuery, values);
+      await client.query(candleQuery, candleValues);
     }
 
     return NextResponse.json({ inserted, candlesUpserted: candles.length });

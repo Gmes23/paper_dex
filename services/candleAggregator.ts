@@ -22,7 +22,9 @@ type TradeLike = {
   time: number;
 };
 
-const DEFAULT_FLUSH_MS = 5000;
+const DEFAULT_FLUSH_MS = 20000;
+
+// maximun amount of candles allowed without saving to db 
 const DEFAULT_MAX_BUFFER = 1000;
 
 export class CandleAggregator {

@@ -1,13 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { OrderBookHeader } from '@/components/OrderBook/OrderBookHeader';
+import { Navbar } from '@/components/Navbar';
 import { OrderBookTable } from '@/components/OrderBook/OrderBookTable';
 import { TradesTable } from '@/components/OrderBook/TradesTable';
 import { TradeTab } from '@/components/TradeTab/TradeTab';
 import { PositionsTable } from '@/components/PositionsTable/PositionsTable';
 import { PriceChart } from '@/components/Chart/Chart';
-
 
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useMockWebSocket } from '@/hooks/useMockWebSocket';
@@ -22,19 +21,18 @@ import { useChartData } from '@/hooks/useChartData';
 import { WS_SOURCE } from '@/lib/constants';
 import type { Symbol, Tab, Denomination, TradeFormState, TradeData, OrderBookData } from '@/lib/types';
 import type { TimeInterval } from '@/lib/chartUtils';
+import type { MockTrade } from '@/lib/mockData';
 
-// ????? this can be better place?
 const wsSource = WS_SOURCE;
 const useLive = wsSource === 'live';
 
-
 export default function OrderBook() {
-
   const [symbol, setSymbol] = useState<Symbol>('BTC');
-  const [interval, setInterval] = useState<TimeInterval>('5m');
+  const [interval, setChartInterval] = useState<TimeInterval>('5m');
   const [priceGrouping, setPriceGrouping] = useState<number>(1);
   const [activeTab, setActiveTab] = useState<Tab>('orderbook');
-  const [denomination, setDenomination] = useState<Denomination>('asset');
+  const orderBookDenomination: Denomination = 'asset';
+  const [tradesDenomination, setTradesDenomination] = useState<Denomination>('asset');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
 
   const {
@@ -45,10 +43,14 @@ export default function OrderBook() {
     spread,
     maxBidTotal,
     maxAskTotal,
+    lastUpdateTimestamp,
     processOrderBook,
     error
-  } = useOrderBookState({ symbol, priceGrouping });
-
+  } = useOrderBookState({
+    symbol,
+    priceGrouping,
+    workerDebounceMs: 10,
+  });
 
   const { trades, processTrades, resetTrades } = useTrades({
     symbol,
@@ -86,16 +88,8 @@ export default function OrderBook() {
     [enqueueOrderBook, processOrderBook]
   );
 
-  const { isConnected: liveConnected } = useWebSocket({
-    symbol,
-    onOrderBookUpdate: handleOrderBook,
-    onTradesUpdate: handleTrades,
-    enabled: useLive,
-  });
-
-  const { isConnected: mockConnected } = useMockWebSocket({
-    symbol,
-    onTradesUpdate: (trade) => {
+  const handleMockTradesUpdate = useCallback(
+    (trade: MockTrade) => {
       const tradeData: TradeData = {
         coin: symbol,
         side: trade.side === 'buy' ? 'B' : 'A',
@@ -106,26 +100,42 @@ export default function OrderBook() {
       };
       handleTrades([tradeData]);
     },
-    onOrderBookUpdate: (orderBook) => {
-      handleOrderBook(orderBook as OrderBookData);
+    [handleTrades, symbol]
+  );
+
+  const handleMockOrderBookUpdate = useCallback(
+    (orderBook: OrderBookData) => {
+      handleOrderBook(orderBook);
     },
+    [handleOrderBook]
+  );
+
+  useWebSocket({
+    symbol,
+    onOrderBookUpdate: handleOrderBook,
+    onTradesUpdate: handleTrades,
+    enabled: useLive,
+  });
+
+  useMockWebSocket({
+    symbol,
+    onTradesUpdate: handleMockTradesUpdate,
+    onOrderBookUpdate: handleMockOrderBookUpdate,
     enabled: !useLive,
     historicalCount: 0,
     tradeIntervalMs: 700,
     volatility: 0.01,
   });
-
-  const isConnected = useLive ? liveConnected : mockConnected;
+  const orderBookStalenessMs =
+    lastUpdateTimestamp != null
+      ? Math.max(0, Date.now() - lastUpdateTimestamp)
+      : null;
 
   const [markPrice, setMarkPrice] = useState<number | null>(null);
   const bestBidRef = useRef(bestBid);
   const bestAskRef = useRef(bestAsk);
-
-
   const currentMarkPriceRef = useRef<number | null>(null);
 
-
-  //state for when buy/selling TradeTab
   const [tradeForm, setTradeForm] = useState<TradeFormState>({
     tradeAsset: symbol,
     inputPrice: '',
@@ -138,11 +148,86 @@ export default function OrderBook() {
 
   const { user, refresh: refreshUser } = useWalletAuth();
   const { positions, openPosition, closePosition } = usePaperPositions();
+  const [markPriceBySymbol, setMarkPriceBySymbol] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    if (markPrice == null) return;
+    setMarkPriceBySymbol((prev) => {
+      if (prev[symbol] === markPrice) return prev;
+      return { ...prev, [symbol]: markPrice };
+    });
+  }, [markPrice, symbol]);
+
+  useEffect(() => {
+    const symbolsInPositions = Array.from(new Set(positions.map((position) => position.symbol)));
+    const symbolsToFetch = symbolsInPositions.filter((positionSymbol) => positionSymbol !== symbol);
+    if (symbolsToFetch.length === 0) return;
+
+    let cancelled = false;
+
+    const refreshMarks = async () => {
+      const updates: Record<string, number> = {};
+
+      await Promise.all(
+        symbolsToFetch.map(async (positionSymbol) => {
+          try {
+            const res = await fetch(`/api/candles?symbol=${positionSymbol}&interval=1m&limit=1`, {
+              cache: 'no-store',
+            });
+            if (!res.ok) return;
+            const data = (await res.json()) as { candles?: Array<{ close?: number | string }> } | null;
+            const candles = Array.isArray(data?.candles) ? data.candles : [];
+            const latest = candles[candles.length - 1];
+            const close = Number(latest?.close);
+            if (!Number.isFinite(close) || close <= 0) return;
+            updates[positionSymbol] = close;
+          } catch {
+            // best-effort only; leave previous mark if fetch fails
+          }
+        })
+      );
+
+      if (cancelled || Object.keys(updates).length === 0) return;
+      setMarkPriceBySymbol((prev) => ({ ...prev, ...updates }));
+    };
+
+    void refreshMarks();
+    const timer = setInterval(() => {
+      void refreshMarks();
+    }, 2500);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [positions, symbol]);
+
+  const getMarkPriceForSymbol = useCallback(
+    (positionSymbol: string) => {
+      if (positionSymbol === symbol) return markPrice;
+      return markPriceBySymbol[positionSymbol] ?? null;
+    },
+    [markPrice, markPriceBySymbol, symbol]
+  );
 
   const addPosition = useCallback(async () => {
-    const positionSize = Number(tradeForm.size);
+    const rawSize = Number(tradeForm.size);
+    const inputPrice = Number(tradeForm.inputPrice);
+    const referencePrice =
+      Number.isFinite(inputPrice) && inputPrice > 0
+        ? inputPrice
+        : (markPrice ?? 0);
+    const positionSize =
+      tradeForm.tradeAsset === 'USDC'
+        ? rawSize
+        : rawSize * referencePrice;
+
     if (!Number.isFinite(positionSize) || positionSize <= 0) {
       alert('Enter a valid position size');
+      return;
+    }
+    if (tradeForm.tradeAsset !== 'USDC' && (!Number.isFinite(referencePrice) || referencePrice <= 0)) {
+      alert('Price unavailable. Please enter a valid price.');
       return;
     }
 
@@ -157,7 +242,7 @@ export default function OrderBook() {
     } catch (err) {
       alert((err as Error).message ?? 'Failed to open position');
     }
-  }, [openPosition, refreshUser, symbol, tradeForm.activeTradeTab, tradeForm.leverage, tradeForm.size]);
+  }, [markPrice, openPosition, refreshUser, symbol, tradeForm.activeTradeTab, tradeForm.inputPrice, tradeForm.leverage, tradeForm.size, tradeForm.tradeAsset]);
 
   useEffect(() => {
     bestBidRef.current = bestBid;
@@ -197,7 +282,7 @@ export default function OrderBook() {
     return () => {
       cancelled = true;
     };
-  }, [processOrderBook, symbol, wsSource]);
+  }, [processOrderBook, symbol]);
 
   useEffect(() => {
     setTradeForm(prevState => ({
@@ -206,7 +291,6 @@ export default function OrderBook() {
     }));
   }, [symbol]);
 
-  // Reset trades when symbol changes
   useEffect(() => {
     resetTrades();
     setPriceGrouping(symbol === 'BTC' ? 1 : 0.1);
@@ -216,81 +300,108 @@ export default function OrderBook() {
     setTradeForm(prevState => ({ ...prevState, ...value }))
   }, [])
 
+  const toggleTradesDenomination = useCallback(() => {
+    setTradesDenomination((prev) => (prev === 'asset' ? 'usdc' : 'asset'));
+  }, []);
 
   return (
-    <div className="min-h-screen bg-[#0a0e13] text-white p-4">
-      <div className="grid grid-cols-2 gap-0">
+    <div className="h-screen flex flex-col bg-[#0a0e13] text-white overflow-hidden">
+      {/* Navbar */}
+      <Navbar
+        symbol={symbol}
+        markPrice={markPrice}
+        availableBalance={user?.availableBalance ?? 0}
+        onSymbolChange={setSymbol}
+        symbolOptions={['BTC', 'ETH']}
+      />
 
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span
-              className={`px-3 py-1 rounded text-xs font-semibold ${useLive ? 'bg-green-500 text-black' : 'bg-amber-500 text-black'
-                }`}
-            >
-              {useLive ? 'LIVE' : 'MOCK'}
-            </span>
-            <span className="px-3 py-1 rounded bg-gray-700 text-gray-200 text-xs font-semibold">
-              {symbol}
-            </span>
-          </div>
+      {/* Main content: 3 columns */}
+      <div className="flex-1 flex min-h-0">
+        {/* Left column: Chart + Positions */}
+        <div className="flex-1 flex flex-col min-w-0 border-r border-white/5 px-3 pt-3 pb-3 gap-3">
           <PriceChart
             candles={candles}
             loading={candlesLoading}
             symbol={symbol}
             interval={interval}
-            onIntervalChange={setInterval}
-          />
-          <PositionsTable
-            userPositions={positions}
+            onIntervalChange={setChartInterval}
             markPrice={markPrice}
-            onClosePosition={async (id) => {
-              try {
-                await closePosition(id);
-                await refreshUser();
-              } catch (err) {
-                alert((err as Error).message ?? 'Failed to close position');
-              }
-            }}
           />
+
+          <div className="rounded-xl border border-white/10 overflow-hidden">
+            <PositionsTable
+              userPositions={positions}
+              getMarkPriceForSymbol={getMarkPriceForSymbol}
+              onClosePosition={async (id) => {
+                try {
+                  await closePosition(id);
+                  await refreshUser();
+                } catch (err) {
+                  alert((err as Error).message ?? 'Failed to close position');
+                }
+              }}
+            />
+          </div>
         </div>
 
+        {/* Middle column: Order Book */}
+        <div className="w-[280px] flex-shrink-0 border-r border-white/5 flex flex-col">
+          <div className="px-3 py-4 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-3 text-[11px] uppercase tracking-wider">
+              <button
+                type="button"
+                onClick={() => setActiveTab('orderbook')}
+                className={`transition cursor-pointer ${
+                  activeTab === 'orderbook'
+                    ? 'text-white'
+                    : 'text-gray-500 hover:text-white'
+                }`}
+              >
+                Order Book
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('trades')}
+                className={`transition cursor-pointer ${
+                  activeTab === 'trades'
+                    ? 'text-white'
+                    : 'text-gray-500 hover:text-white'
+                }`}
+              >
+                Trades
+              </button>
 
+            </div>
+            <span className="text-[10px] text-gray-500 tabular-nums">
+              Last update: {orderBookStalenessMs != null ? `${orderBookStalenessMs}ms ago` : 'n/a'}
+            </span>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {activeTab === 'orderbook' ? (
+              <OrderBookTable
+                fixedAsks={fixedAsks}
+                fixedBids={fixedBids}
+                spread={spread}
+                maxAskTotal={orderBookDenomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
+                maxBidTotal={orderBookDenomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
+                denomination={orderBookDenomination}
+                symbol={symbol}
+                error={error}
+                onPriceSelect={(price) => callbackTradeForm({ inputPrice: price })}
+              />
+            ) : (
+              <TradesTable
+                trades={trades}
+                denomination={tradesDenomination}
+                symbol={symbol}
+                onToggleDenomination={toggleTradesDenomination}
+              />
+            )}
+          </div>
+        </div>
 
-        <div className="max-w-l mx-[2.75rem]">
-          <OrderBookHeader
-            symbol={symbol}
-            setSymbol={setSymbol}
-            priceGrouping={priceGrouping}
-            setPriceGrouping={setPriceGrouping}
-            activeTab={activeTab}
-            setActiveTab={setActiveTab}
-            denomination={denomination}
-            setDenomination={setDenomination}
-            isConnected={isConnected}
-            openMenu={openMenu}
-            setOpenMenu={setOpenMenu}
-          />
-
-          {activeTab === 'orderbook' ? (
-            <OrderBookTable
-              fixedAsks={fixedAsks}
-              fixedBids={fixedBids}
-              spread={spread}
-              maxAskTotal={denomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
-              maxBidTotal={denomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
-              denomination={denomination}
-              symbol={symbol}
-              error={error}
-              onPriceSelect={(price) => callbackTradeForm({ inputPrice: price })}
-            />
-          ) : (
-            <TradesTable
-              trades={trades}
-              denomination={denomination}
-              symbol={symbol}
-            />
-          )}
-
+        {/* Right column: Place Order */}
+        <div className="w-[260px] flex-shrink-0 p-4 flex flex-col">
           <TradeTab
             symbol={symbol}
             openMenu={openMenu}
@@ -298,20 +409,9 @@ export default function OrderBook() {
             onTradeFormChange={callbackTradeForm}
             tradeForm={tradeForm}
             onPositionSubmit={addPosition}
-            availableBalance={user?.availableBalance ?? 0}
             currentMarkPrice={markPrice}
           />
-
-          {/* Footer */}
-          <div className="mt-4 text-center text-xs text-gray-600">
-            {isConnected ? (
-              <span className="font-pixel-grid text-green-500 text-2xl">● Live</span>
-            ) : (
-              <span className="text-red-500">● Disconnected</span>
-            )}
-          </div>
         </div>
-
       </div>
     </div>
   );

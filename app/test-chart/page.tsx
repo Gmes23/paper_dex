@@ -1,7 +1,7 @@
 // app/test-chart/page.tsx
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { PriceChart } from '@/components/Chart/Chart';
 import { useMockWebSocket } from '@/hooks/useMockWebSocket';
 import { useChartData } from '@/hooks/useChartData';  // 👈 Use the new hook
@@ -9,6 +9,7 @@ import { useTrades } from '@/hooks/useTrades';
 import { usePersistedTrades } from '@/hooks/usePersistedTrades';
 import type { TimeInterval } from '@/lib/chartUtils';
 import type { TradeData } from '@/lib/types';
+import type { MockTrade } from '@/lib/mockData';
 
 export default function TestChartPage() {
   const [speed, setSpeed] = useState(1);
@@ -32,22 +33,23 @@ export default function TestChartPage() {
     trades  // Pass mock trades for real-time updates
   });
 
+  const handleMockTrade = useCallback((trade: MockTrade) => {
+    const tradeData: TradeData = {
+      coin: symbol,
+      side: trade.side === 'buy' ? 'B' : 'A',
+      px: trade.price,
+      sz: trade.size.toString(),
+      time: trade.timeMs,
+      hash: trade.id
+    };
+    processTrades([tradeData]);
+    enqueueTrades([tradeData]);
+  }, [enqueueTrades, processTrades, symbol]);
 
   // Connect mock WebSocket for real-time simulation
   const { fastForward, generateBatch, syncToTimeMs, isConnected } = useMockWebSocket({
     symbol,
-    onTradesUpdate: (trade) => {
-      const tradeData: TradeData = {
-        coin: symbol,
-        side: trade.side === 'buy' ? 'B' : 'A',
-        px: trade.price,
-        sz: trade.size.toString(),
-        time: trade.timeMs,
-        hash: trade.id
-      };
-      processTrades([tradeData]);
-      enqueueTrades([tradeData]);
-    },
+    onTradesUpdate: handleMockTrade,
     enabled,
     speedMultiplier: speed,
     historicalCount: 0,  // 👈 Don't generate historical in mock (API will provide)
@@ -63,26 +65,24 @@ useEffect(() => {
 
 useEffect(() => {
   if (trades.length === 0) return;
-  const latestTrade = trades[0];
-  console.info('📈 Latest trade', {
-    price: latestTrade.price,
-    size: latestTrade.size,
-    timeMs: latestTrade.timeMs,
-    time: latestTrade.time,
-  });
+  // console.info('📈 Latest trade', {
+  //   price: latestTrade.price,
+  //   size: latestTrade.size,
+  //   timeMs: latestTrade.timeMs,
+  //   time: latestTrade.time,
+  // });
 }, [trades]);
 
 useEffect(() => {
   if (candles.length === 0) return;
-  const lastCandle = candles[candles.length - 1];
-  console.info('🕯️ Latest candle', {
-    time: new Date(lastCandle.time * 1000).toLocaleTimeString(),
-    open: lastCandle.open,
-    high: lastCandle.high,
-    low: lastCandle.low,
-    close: lastCandle.close,
-    volume: lastCandle.volume,
-  });
+  // console.info('🕯️ Latest candle', {
+  //   time: new Date(lastCandle.time * 1000).toLocaleTimeString(),
+  //   open: lastCandle.open,
+  //   high: lastCandle.high,
+  //   low: lastCandle.low,
+  //   close: lastCandle.close,
+  //   volume: lastCandle.volume,
+  // });
 }, [candles]);
 
 useEffect(() => {
@@ -90,23 +90,7 @@ useEffect(() => {
   syncToTimeMs(lastCandleTime * 1000);
 }, [lastCandleTime, syncToTimeMs]);
 
-const debugSnapshot = useMemo(() => {
-  return {
-    interval,
-    candlesCount: candles.length,
-    lastCandle: candles.length > 0 ? candles[candles.length - 1] : null,
-    latestTrade: trades.length > 0 ? trades[0] : null,
-    lastCandleTime,
-    lastProcessedTradeTimeMs,
-  };
-}, [interval, candles, trades, lastCandleTime, lastProcessedTradeTimeMs]);
-
 const handleIntervalChange = (next: TimeInterval) => {
-  console.info('⏱️ Interval switch START', {
-    from: interval,
-    to: next,
-    before: debugSnapshot,
-  });
   setInterval(next);
   setTimeout(() => {
     console.info('⏱️ Interval switch END', {
@@ -320,12 +304,13 @@ const handleIntervalChange = (next: TimeInterval) => {
         </div>
 
         {/* Chart - now uses real API + mock real-time updates */}
-        <PriceChart 
+        <PriceChart
           candles={candles}
           loading={loading}
           symbol={symbol}
           interval={interval}
           onIntervalChange={handleIntervalChange}
+          markPrice={null}
         />
 
         {/* Recent Trades Table */}

@@ -33,11 +33,10 @@ export function useMockWebSocket({
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ✅ Track historical load state + timeouts to avoid leaks
   const hasLoadedHistoricalRef = useRef(false);
   const historicalTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  // ✅ Avoid stale closures without restarting the interval every render
+
   const onTradesUpdateRef = useRef(onTradesUpdate);
   const onOrderBookUpdateRef = useRef(onOrderBookUpdate);
 
@@ -49,7 +48,6 @@ export function useMockWebSocket({
     onOrderBookUpdateRef.current = onOrderBookUpdate;
   }, [onOrderBookUpdate]);
 
-  // ✅ Initialize generator (or re-init if symbol changes and you want different base behavior)
   useEffect(() => {
     if (!generatorRef.current) {
       // basePrice here is your starting price for mock world
@@ -66,13 +64,11 @@ export function useMockWebSocket({
     generatorRef.current.setCurrentTimeMs(startTimeMs as number);
   }, [startTimeMs]);
 
-  // ✅ Helper: clear historical timeouts safely
   const clearHistoricalTimeouts = useCallback(() => {
     historicalTimeoutsRef.current.forEach((t) => clearTimeout(t));
     historicalTimeoutsRef.current = [];
   }, []);
 
-  // ✅ Reset historical “loaded” when symbol changes OR when you disable/enable again
   useEffect(() => {
     hasLoadedHistoricalRef.current = false;
     clearHistoricalTimeouts();
@@ -94,11 +90,8 @@ export function useMockWebSocket({
     if (hasLoadedHistoricalRef.current) return;
     if (historicalCount <= 0) return;
 
-    console.log(`📚 Loading ${historicalCount} historical trades...`);
+    // console.log(`📚 Loading ${historicalCount} historical trades...`);
 
-    // 🔥 Key idea:
-    // make history cover a realistic span of simulated time.
-    // Here we treat speedMultiplier as “simulated time multiplier”, so historical spacing grows too.
     const simulatedIntervalMs = Math.max(1, tradeIntervalMs * speedMultiplier);
 
     const historicalTrades = generatorRef.current.generateHistoricalTrades(
@@ -116,7 +109,7 @@ export function useMockWebSocket({
     });
 
     hasLoadedHistoricalRef.current = true;
-    console.log(`✅ Loaded ${historicalCount} historical trades`);
+ 
 
     // cleanup if effect re-runs / unmount
     return () => {
@@ -131,20 +124,14 @@ export function useMockWebSocket({
     if (!enabled) return;
     if (!generatorRef.current) return;
 
-    // ✅ This is the critical fix for “never moves to next candle”:
-    // We advance SIMULATED time by tradeIntervalMs * speedMultiplier every tick.
-    // That means on 5m candles you can reach the next bucket quickly.
-    const simulatedAdvanceMs = Math.max(1, tradeIntervalMs * speedMultiplier);
 
-    console.log(
-      `🔴 Mock WS START | emit every ${tradeIntervalMs}ms real-time | simulate +${simulatedAdvanceMs}ms per tick (x${speedMultiplier})`
-    );
+    const simulatedAdvanceMs = Math.max(1, tradeIntervalMs * speedMultiplier);
 
     intervalRef.current = setInterval(() => {
       const gen = generatorRef.current;
       if (!gen) return;
 
-      // ✅ Force time forward (convert ms -> minutes for your generator)
+      
       gen.fastForward(simulatedAdvanceMs / 60000);
 
       // Generate one trade and publish it
@@ -191,9 +178,6 @@ export function useMockWebSocket({
       const gen = generatorRef.current;
       if (!gen) return;
 
-      console.log(`📦 Generating ${count} trades...`);
-
-      // Make batch generation also move simulated time so candles can form
       const simulatedAdvanceMs = Math.max(1, tradeIntervalMs * speedMultiplier);
 
       for (let i = 0; i < count; i++) {

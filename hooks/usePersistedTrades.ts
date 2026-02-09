@@ -14,8 +14,8 @@ interface UsePersistedTradesProps {
 export function usePersistedTrades({
   enabled = true,
   source,
-  flushIntervalMs = 2000,
-  maxBatchSize = 200,
+  flushIntervalMs = 20000,
+  maxBatchSize = 500,
 }: UsePersistedTradesProps) {
   const bufferRef = useRef<TradeData[]>([]);
   const inflightRef = useRef(false);

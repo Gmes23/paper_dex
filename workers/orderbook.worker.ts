@@ -8,6 +8,30 @@ let knownAskPrices = new Set<number>();
 let skipFlash = true;
 let currentSymbol: string | null = null;
 let currentGrouping: number | null = null;
+const MAX_KNOWN_PRICES = 1000;
+
+function buildCurrentPriceSet(rawBids: Array<{ px: string }>, rawAsks: Array<{ px: string }>) {
+  const prices = new Set<number>();
+
+  for (const bid of rawBids) {
+    const price = Number.parseFloat(bid.px);
+    if (Number.isFinite(price)) prices.add(price);
+  }
+  for (const ask of rawAsks) {
+    const price = Number.parseFloat(ask.px);
+    if (Number.isFinite(price)) prices.add(price);
+  }
+
+  return prices;
+}
+
+function pruneKnownPrices(knownPrices: Set<number>, currentPrices: Set<number>) {
+  for (const price of knownPrices) {
+    if (!currentPrices.has(price)) {
+      knownPrices.delete(price);
+    }
+  }
+}
 
 self.onmessage = (event) => {
   const { rawBids, rawAsks, priceGrouping, symbol } = event.data;
@@ -42,12 +66,10 @@ self.onmessage = (event) => {
   knownBidPrices = bidsResult.newKnownPrices;
   knownAskPrices = asksResult.newKnownPrices;
 
-  if(knownAskPrices.size > 1000 && knownBidPrices.size > 1000) {
-    const currentOrderBookPrices = new Set([...rawBids, ...rawAsks].map(object => parseFloat(object.px)));
-
-    knownAskPrices = new Set([...knownAskPrices].filter(p => currentOrderBookPrices.has(p)))
-
-    knownBidPrices = new Set([...knownBidPrices].filter((bidprice) => currentOrderBookPrices.has(bidprice)))
+  if (knownAskPrices.size > MAX_KNOWN_PRICES || knownBidPrices.size > MAX_KNOWN_PRICES) {
+    const currentOrderBookPrices = buildCurrentPriceSet(rawBids, rawAsks);
+    pruneKnownPrices(knownAskPrices, currentOrderBookPrices);
+    pruneKnownPrices(knownBidPrices, currentOrderBookPrices);
   }
 
   skipFlash = false;
@@ -99,7 +121,8 @@ self.onmessage = (event) => {
       asset: maxAskTotalAsset, 
       usdc: maxAskTotalUsdc 
     },
-    symbol  // Echo back for verification
+    symbol,  // Echo back for verification
+    timestamp: Date.now(),
   });
 };
 

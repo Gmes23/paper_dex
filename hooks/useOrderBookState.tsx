@@ -8,6 +8,7 @@ import type { OrderBookData, ProcessedLevel, Symbol } from '@/lib/types';
 interface UseOrderBookStateProps {
   symbol: Symbol;
   priceGrouping: number;
+  workerDebounceMs?: number;
 }
 
 interface ProcessedDataProps {
@@ -18,34 +19,65 @@ interface ProcessedDataProps {
   spread: { value: number; percentage: number } | null;
   maxBidTotal: { asset: number; usdc: number };
   maxAskTotal: { asset: number; usdc: number };
+  symbol: string;
+  timestamp: number;
 }
 export function useOrderBookState({
   symbol,
-  priceGrouping
+  priceGrouping,
+  workerDebounceMs = 50,
 }: UseOrderBookStateProps) {
 
-  // ✅ ONLY store worker results
   const [processedData, setProcessedData] = useState< ProcessedDataProps| null>(null);
 
   const workerRef = useRef<Worker | null>(null);
   const currentSymbolRef = useRef<string>(symbol);
 
-  //fallback for error 
   const [workerError, setWorkError] = useState<string | null>(null);
 
-  //track if worker is in progress
   const isProcessingRef = useRef(false);
-
-  //store the most recent data while worker is busy
   const pendingDataRef = useRef<OrderBookData | null>(null);
+  const latestDataRef = useRef<OrderBookData | null>(null);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const priceGroupingRef = useRef(priceGrouping);
+  const workerDebounceRef = useRef(Math.max(0, workerDebounceMs));
 
   useEffect(() => {
     priceGroupingRef.current = priceGrouping;
   }, [priceGrouping]);
 
+  useEffect(() => {
+    workerDebounceRef.current = Math.max(0, workerDebounceMs);
+  }, [workerDebounceMs]);
 
-  // ✅ Create worker once
+  const postToWorker = useCallback((data: OrderBookData) => {
+    isProcessingRef.current = true;
+    workerRef.current?.postMessage({
+      rawBids: data.levels[0],
+      rawAsks: data.levels[1],
+      priceGrouping: priceGroupingRef.current,
+      symbol: currentSymbolRef.current
+    });
+  }, []);
+
+  const flushLatestData = useCallback(() => {
+    debounceTimerRef.current = null;
+
+    const dataToProcess = latestDataRef.current;
+    latestDataRef.current = null;
+
+    if (!dataToProcess) return;
+    if (dataToProcess.coin !== currentSymbolRef.current) return;
+
+    if (isProcessingRef.current) {
+      pendingDataRef.current = dataToProcess;
+      return;
+    }
+
+    postToWorker(dataToProcess);
+  }, [postToWorker]);
+
+
   useEffect(() => {
     workerRef.current = new Worker(
       new URL('../workers/orderbook.worker.ts', import.meta.url)
@@ -61,15 +93,8 @@ export function useOrderBookState({
 
       if(pendingDataRef.current) {
         const dataToProcess = pendingDataRef.current;
-
-        //why process it now?
-        isProcessingRef.current = true;
-        workerRef.current?.postMessage({
-          rawBids: dataToProcess.levels[0],
-          rawAsks: dataToProcess.levels[1],
-          priceGrouping: priceGroupingRef.current,
-          symbol: currentSymbolRef.current
-        })
+        pendingDataRef.current = null;
+        postToWorker(dataToProcess);
       }
     };
 
@@ -81,68 +106,78 @@ export function useOrderBookState({
     return () => {
       workerRef.current?.terminate();
     };
-  }, []);
+  }, [postToWorker]);
 
-  // ✅ Send data to worker (NO processing here!)
   const processOrderBook = useCallback((data: OrderBookData) => {
     if (data.coin !== currentSymbolRef.current) return;
 
-    if(isProcessingRef.current) {
-      pendingDataRef.current = data;
+    latestDataRef.current = data;
+
+    if (debounceTimerRef.current) {
       return;
     }
 
-    isProcessingRef.current = true;
-    workerRef.current?.postMessage({
-      rawBids: data.levels[0],
-      rawAsks: data.levels[1],
-      priceGrouping: priceGroupingRef.current,
-      symbol: currentSymbolRef.current
-    });
-  }, [priceGrouping]);
+    debounceTimerRef.current = setTimeout(() => {
+      flushLatestData();
+    }, workerDebounceRef.current);
+  }, [flushLatestData]);
 
-  // ✅ Update symbol reference
   useEffect(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
     currentSymbolRef.current = symbol;
-    setProcessedData(null); // Clear old data
     pendingDataRef.current = null;
+    latestDataRef.current = null;
     isProcessingRef.current = false;
   }, [symbol]);
 
-  // ✅ Format for display (cheap operation, OK on main thread)
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      latestDataRef.current = null;
+    };
+  }, []);
+
+  const visibleProcessedData =
+    processedData?.symbol === symbol ? processedData : null;
+
   const fixedAsks = useMemo(() => {
-    if (!processedData) return Array(NUM_ROWS).fill(null);
+    if (!visibleProcessedData) return Array(NUM_ROWS).fill(null);
 
     const rows: (ProcessedLevel | null)[] = Array(NUM_ROWS).fill(null);
-    processedData.asks.forEach((ask, i) => {
+    visibleProcessedData.asks.forEach((ask, i) => {
       rows[NUM_ROWS - 1 - i] = ask;
     });
     return rows;
-  }, [processedData?.asks]);
+  }, [visibleProcessedData]);
 
   const fixedBids = useMemo(() => {
-    if (!processedData) return Array(NUM_ROWS).fill(null);
+    if (!visibleProcessedData) return Array(NUM_ROWS).fill(null);
 
     const rows: (ProcessedLevel | null)[] = Array(NUM_ROWS).fill(null);
-    processedData.bids.forEach((bid, i) => {
+    visibleProcessedData.bids.forEach((bid, i) => {
       rows[NUM_ROWS - 1 - i] = bid;
     });
     return rows;
-  }, [processedData?.bids]);
+  }, [visibleProcessedData]);
 
 
-
-  // ✅ Return worker results
   return {
-    bids: processedData?.bids || [],
-    asks: processedData?.asks || [],
+    bids: visibleProcessedData?.bids || [],
+    asks: visibleProcessedData?.asks || [],
     fixedBids,
     fixedAsks,
-    bestBid: processedData?.bestBid || null,
-    bestAsk: processedData?.bestAsk || null,
-    spread: processedData?.spread || null,
-    maxBidTotal: processedData?.maxBidTotal || { asset: 0, usdc: 0 },
-    maxAskTotal: processedData?.maxAskTotal || { asset: 0, usdc: 0 },
+    bestBid: visibleProcessedData?.bestBid || null,
+    bestAsk: visibleProcessedData?.bestAsk || null,
+    spread: visibleProcessedData?.spread || null,
+    maxBidTotal: visibleProcessedData?.maxBidTotal || { asset: 0, usdc: 0 },
+    maxAskTotal: visibleProcessedData?.maxAskTotal || { asset: 0, usdc: 0 },
+    lastUpdateTimestamp: visibleProcessedData?.timestamp ?? null,
     processOrderBook,
     error: workerError
   };

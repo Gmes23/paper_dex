@@ -15,7 +15,9 @@ export async function GET() {
     status: 'ok',
     timestamp: new Date().toISOString(),
     startedAt: state.startedAt,
-    websocket: state.websocket.getStats(),
-    aggregator: state.aggregator.getStats(),
+    liveIngestionEnabled: state.liveIngestionEnabled,
+    websocket: state.websocket?.getStats() ?? null,
+    aggregator: state.aggregator?.getStats() ?? null,
+    liquidation: state.liquidation.getStats(),
   });
 }

@@ -17,6 +17,7 @@ interface PriceChartProps {
     symbol: string;
     interval: TimeInterval;
     onIntervalChange: (interval: TimeInterval) => void;
+    markPrice: number | null;
 }
 
 export function PriceChart({
@@ -25,6 +26,7 @@ export function PriceChart({
     symbol,
     interval,
     onIntervalChange,
+    markPrice,
 }: PriceChartProps) {
     const chartContainerRef = useRef<HTMLDivElement>(null);
 
@@ -33,13 +35,9 @@ export function PriceChart({
     const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
     const [autoScale, setAutoScale] = useState(true);
 
-    // Track if we already set full history once
     const didSetInitialDataRef = useRef(false);
-
-    // Track the last N candle times we've rendered (to detect updates vs new candles)
     const renderedCandleTimesRef = useRef<Set<number>>(new Set());
 
-    // Reset when interval or symbol changes
     useEffect(() => {
         didSetInitialDataRef.current = false;
         renderedCandleTimesRef.current = new Set();
@@ -56,16 +54,16 @@ export function PriceChart({
             width: container.clientWidth,
             height: 400,
             layout: {
-                background: { type: ColorType.Solid, color: '#131722' },
-                textColor: '#d1d4dc',
+                background: { type: ColorType.Solid, color: '#0d1117' },
+                textColor: '#555',
             },
             grid: {
-                vertLines: { color: '#1a1e27' },
-                horzLines: { color: '#1a1e27' },
+                vertLines: { color: '#161b22' },
+                horzLines: { color: '#161b22' },
             },
-            rightPriceScale: { borderColor: '#2B2B43' },
+            rightPriceScale: { borderColor: '#1b2028' },
             timeScale: {
-                borderColor: '#2B2B43',
+                borderColor: '#1b2028',
                 timeVisible: true,
                 secondsVisible: false,
             },
@@ -118,13 +116,11 @@ export function PriceChart({
         if (loading) return;
         if (!candles || candles.length === 0) return;
 
-        // Defensive: ensure sorted ascending and numeric time
         const sorted = [...candles]
             .map((c: any) => ({ ...c, time: Number(c.time) }))
             .filter((c) => Number.isFinite(c.time))
             .sort((a, b) => a.time - b.time);
 
-        // If we haven't set initial history yet, set it once
         if (!didSetInitialDataRef.current) {
             candleSeries.setData(sorted as any);
 
@@ -141,7 +137,6 @@ export function PriceChart({
             return;
         }
 
-        // Real-time incremental update: ONLY update the latest candle
         const last = sorted[sorted.length - 1];
 
         candleSeries.update(last as any);
@@ -156,7 +151,6 @@ export function PriceChart({
         didSetInitialDataRef.current = false;
         renderedCandleTimesRef.current = new Set();
 
-        // IMPORTANT: clear the series so old timeframe bars don't conflict
         candleSeriesRef.current?.setData([] as any);
         volumeSeriesRef.current?.setData([] as any);
     }, [interval, symbol]);
@@ -167,61 +161,66 @@ export function PriceChart({
         candleSeries.priceScale().applyOptions({ autoScale });
     }, [autoScale]);
 
-
-
+    const intervals: TimeInterval[] = ['1m', '5m', '15m', '1h'];
     const showEmpty = !loading && candles.length === 0;
 
     return (
-        <div className="bg-[#131722] p-4 rounded-lg mb-4">
-            <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-bold text-white">{symbol}/USDC</h2>
+        <div className="flex flex-col rounded-xl border border-white/10 bg-[#0d1117] overflow-hidden">
+            {/* Chart header */}
+            <div className="flex items-center justify-between px-4 py-3">
+                <div className="flex items-center gap-3">
+                    <span className="text-sm font-semibold text-white">{symbol}/USDT</span>
+                    <span className="text-lg font-bold text-white font-mono">
+                        {markPrice != null
+                            ? markPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+                            : '—'}
+                    </span>
+                </div>
 
-                <div className="flex gap-2 items-center">
-                    {(['1m', '5m', '15m', '1h'] as TimeInterval[]).map((int) => (
+                <div className="flex items-center gap-1">
+                    {intervals.map((int) => (
                         <button
                             key={int}
                             onClick={() => onIntervalChange(int)}
                             disabled={loading}
-                            className={`px-3 py-1 rounded transition ${interval === int
-                                ? 'bg-teal-500 text-white'
-                                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                                } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            className={`px-2 py-0.5 text-xs rounded cursor-pointer transition ${
+                                interval === int
+                                    ? 'bg-white/10 text-white'
+                                    : 'text-gray-600 hover:text-gray-400'
+                            } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
                         >
                             {int}
                         </button>
                     ))}
+                    <span className="w-px h-4 bg-white/10 mx-1" />
                     <button
                         onClick={() => setAutoScale((prev) => !prev)}
-                        className={`px-3 py-1 rounded font-bold transition ${
-                            autoScale ? 'bg-yellow-500 text-black' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        className={`px-2 py-0.5 text-xs rounded cursor-pointer transition ${
+                            autoScale ? 'bg-white/10 text-white' : 'text-gray-600 hover:text-gray-400'
                         }`}
                         title={autoScale ? 'Auto-scale enabled' : 'Auto-scale disabled'}
-                        aria-pressed={autoScale}
                     >
-                        A
+                        1D
                     </button>
                 </div>
             </div>
 
-            <p className="text-xs text-gray-500 mb-2">
-                Displaying {candles.length} candles
-            </p>
-
-            <div className="relative rounded overflow-hidden">
+            {/* Chart */}
+            <div className="relative">
                 <div ref={chartContainerRef} className="h-[400px]" />
 
                 {loading && (
-                    <div className="absolute inset-0 flex items-center justify-center text-gray-400 bg-[#131722]/80">
+                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 bg-[#0d1117]/80">
                         <div className="text-center">
-                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-500 mx-auto mb-4"></div>
-                            <p>Loading chart data...</p>
+                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-500 mx-auto mb-3" />
+                            <p className="text-xs">Loading chart...</p>
                         </div>
                     </div>
                 )}
 
                 {showEmpty && (
-                    <div className="absolute inset-0 flex items-center justify-center text-gray-400 bg-[#131722]/80">
-                        <p>No chart data available</p>
+                    <div className="absolute inset-0 flex items-center justify-center text-gray-600 bg-[#0d1117]/80">
+                        <p className="text-xs">No chart data available</p>
                     </div>
                 )}
             </div>

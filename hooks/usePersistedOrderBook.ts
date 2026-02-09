@@ -13,7 +13,7 @@ interface UsePersistedOrderBookProps {
 export function usePersistedOrderBook({
   enabled = true,
   source,
-  flushIntervalMs = 1500,
+  flushIntervalMs = 5000,
 }: UsePersistedOrderBookProps) {
   const latestRef = useRef<OrderBookData | null>(null);
   const inflightRef = useRef(false);

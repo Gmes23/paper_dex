@@ -6,7 +6,6 @@ interface OrderBookRowProps {
     side: 'bid' | 'ask';
     depthPercentage: number;
     denomination: Denomination;
-    displaySide: string;
     onClick: (price: string) => void;
 }
 
@@ -15,28 +14,24 @@ export function OrderBookRow({
     side,
     depthPercentage,
     denomination,
-    displaySide,
     onClick
 }: OrderBookRowProps) {
     const isBid = side === 'bid';
-    const colorClass = isBid ? 'text-green-500' : 'text-red-500';
-    const bgColorClass = isBid ? 'bg-green-500/10' : 'bg-red-500/10';
+    const colorClass = isBid ? 'text-green-400' : 'text-red-400';
+    const bgColorClass = isBid ? 'bg-green-500/8' : 'bg-red-500/8';
     const flashClass = level?.isNew
         ? (isBid ? 'animate-flash-row-green' : 'animate-flash-row-red')
         : '';
 
-
     return (
         <div
             onClick={() => level && onClick(level.priceStr)}
-            className={`relative grid grid-cols-3 gap-2 px-4 py-1.5 text-sm h-8 cursor-pointer ${flashClass}`}
+            className={`relative grid grid-cols-3 px-3 py-[3px] text-xs cursor-pointer hover:bg-white/5 ${flashClass}`}
         >
             {level ? (
                 <>
                     <div
-                        className={`absolute top-[1px] bottom-[1px] 
-                ${displaySide}
-                ${bgColorClass} transition-[width] duration-300 ease-out`}
+                        className={`absolute top-0 bottom-0 right-0 ${bgColorClass} transition-[width] duration-300 ease-out`}
                         style={{ width: `${depthPercentage}%` }}
                     />
 
@@ -44,26 +39,19 @@ export function OrderBookRow({
                         {level.priceStr}
                     </div>
 
-                    <div className="text-gray-300 font-mono relative z-10 text-center">
+                    <div className="text-gray-300 font-mono relative z-10 text-right">
                         {formatSize(level.size, level.sizeUsdc, denomination)}
                     </div>
 
-                    <div className="text-gray-500 font-mono text-xs relative z-10 text-right">
+                    <div className="text-gray-500 font-mono relative z-10 text-right">
                         {formatTotal(level.total, level.totalUsdc, denomination)}
                     </div>
                 </>
             ) : (
                 <>
-                    <div
-                        className={`absolute top-[1px] bottom-[1px] 
-                ${displaySide}
-                ${bgColorClass} 
-                transition-[width] duration-300 ease-out`}
-                        style={{ width: '0%' }}
-                    />
-                    <div className={`${colorClass} font-mono relative z-10`}>&nbsp;</div>
-                    <div className="text-gray-300 font-mono relative z-10">&nbsp;</div>
-                    <div className="text-gray-500 font-mono text-xs relative z-10">&nbsp;</div>
+                    <div className="relative z-10">&nbsp;</div>
+                    <div className="relative z-10">&nbsp;</div>
+                    <div className="relative z-10">&nbsp;</div>
                 </>
             )}
         </div>

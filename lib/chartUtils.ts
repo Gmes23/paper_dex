@@ -99,7 +99,7 @@ export function aggregateTradesToCandles(
         
         const timestamp = getTradeTimestampMs(trade);
 
-        if (!Number.isFinite(timestamp) || !Number.isFinite(price)) {
+        if (timestamp == null || !Number.isFinite(timestamp) || !Number.isFinite(price)) {
             console.warn('⚠️ Skipping invalid trade:', {
                 time: trade.time,
                 timeMs: trade.timeMs,

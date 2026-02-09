@@ -1,5 +1,5 @@
+import { useEffect, useRef, useState } from 'react';
 import type { Symbol, TradeFormState } from '@/lib/types';
-import { Dropdown } from '@/components/ui/Dropdown';
 
 interface TradeTableProps {
     symbol: Symbol;
@@ -8,169 +8,324 @@ interface TradeTableProps {
     onTradeFormChange: (value: Partial<TradeFormState>) => void;
     tradeForm: TradeFormState;
     onPositionSubmit: () => void;
-    availableBalance: number;
     currentMarkPrice: number | null;
 }
 
 export function TradeTab({
     symbol,
-    setOpenMenu,
-    openMenu,
     onTradeFormChange,
     tradeForm,
     onPositionSubmit,
-    availableBalance,
     currentMarkPrice
 }: TradeTableProps) {
+    const [orderType, setOrderType] = useState<'Limit' | 'Market'>('Limit');
+    const [sizeUnitMenuOpen, setSizeUnitMenuOpen] = useState(false);
+    const isLong = tradeForm.activeTradeTab === 'Long';
+    const leverageOptions = [1, 2, 5, 10];
+    const sizeUnitMenuRef = useRef<HTMLDivElement | null>(null);
+    const selectedSizeUnit = tradeForm.tradeAsset === 'USDC' ? 'USDC' : symbol;
+    const sizeNumeric = Number(tradeForm.size);
+    const parsedInputPrice = Number(tradeForm.inputPrice);
+    const referencePrice =
+        orderType === 'Market'
+            ? (currentMarkPrice ?? (Number.isFinite(parsedInputPrice) ? parsedInputPrice : 0))
+            : (Number.isFinite(parsedInputPrice) && parsedInputPrice > 0
+                ? parsedInputPrice
+                : (currentMarkPrice ?? 0));
+    const hasReferencePrice = Number.isFinite(referencePrice) && referencePrice > 0;
+    const leverage = Number(tradeForm.leverage);
+    const hasSize = Number.isFinite(sizeNumeric) && sizeNumeric > 0;
 
+    const estimatedUsdcValue =
+        selectedSizeUnit === 'USDC'
+            ? sizeNumeric
+            : (Number.isFinite(sizeNumeric) && hasReferencePrice ? sizeNumeric * referencePrice : null);
+    const estimatedCoinValue =
+        selectedSizeUnit === 'USDC'
+            ? (Number.isFinite(sizeNumeric) && hasReferencePrice ? sizeNumeric / referencePrice : null)
+            : sizeNumeric;
+    const positionNotionalUsdc =
+        Number.isFinite(Number(estimatedUsdcValue)) && (estimatedUsdcValue as number) > 0
+            ? (estimatedUsdcValue as number)
+            : null;
+    const marginRequiredUsdc =
+        positionNotionalUsdc && Number.isFinite(leverage) && leverage > 0
+            ? positionNotionalUsdc / leverage
+            : null;
+    const estimatedLiquidationPrice =
+        hasReferencePrice && Number.isFinite(leverage) && leverage > 0
+            ? (isLong
+                ? referencePrice * (1 - 1 / leverage)
+                : referencePrice * (1 + 1 / leverage))
+            : null;
+    const feeRatePerSide = orderType === 'Market' ? 0.00045 : 0.0002;
+    const estimatedFeesUsdc =
+        positionNotionalUsdc
+            ? positionNotionalUsdc * feeRatePerSide * 2
+            : null;
+    const maxLossUsdc = marginRequiredUsdc;
 
+    const formatDecimal = (value: number, decimals: number) => {
+        if (!Number.isFinite(value)) return '';
+        return value
+            .toFixed(decimals)
+            .replace(/\.?0+$/, '');
+    };
+    const formatUsdc = (value: number | null) =>
+        value != null && Number.isFinite(value)
+            ? `${Number(value).toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+            })} USDC`
+            : '—';
+    const formatPrice = (value: number | null) =>
+        value != null && Number.isFinite(value)
+            ? Number(value).toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+            })
+            : '—';
 
+    const switchSizeUnit = (nextUnit: Symbol | 'USDC') => {
+        if (tradeForm.tradeAsset === nextUnit) return;
+
+        const currentValue = Number(tradeForm.size);
+        if (!Number.isFinite(currentValue) || currentValue <= 0 || !hasReferencePrice) {
+            onTradeFormChange({ tradeAsset: nextUnit });
+            return;
+        }
+
+        if (nextUnit === 'USDC') {
+            onTradeFormChange({
+                tradeAsset: 'USDC',
+                size: formatDecimal(currentValue * referencePrice, 2),
+            });
+            return;
+        }
+
+        onTradeFormChange({
+            tradeAsset: nextUnit,
+            size: formatDecimal(currentValue / referencePrice, 6),
+        });
+    };
+
+    useEffect(() => {
+        const onClickOutside = (event: MouseEvent) => {
+            const target = event.target as Node;
+            if (!sizeUnitMenuRef.current?.contains(target)) {
+                setSizeUnitMenuOpen(false);
+            }
+        };
+
+        document.addEventListener('mousedown', onClickOutside);
+        return () => {
+            document.removeEventListener('mousedown', onClickOutside);
+        };
+    }, []);
 
     return (
-        <div className="grid grid-cols-6 bg-[#131722] text-white">
-            <div>
-                cross
-            </div>
-            <div>
-                20x
-            </div>
-            <div>
-                classic
-            </div>
-            <div>
-                Market
-            </div>
-            <div>
-                Limit
-            </div>
-            <div>
-                Pro
-            </div>
+        <div className="flex flex-col h-full">
+            {/* Header */}
+            <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-3">Place Order</div>
 
-            <div className="col-span-6 flex justify-center">
+            {/* Limit / Market toggle */}
+            <div className="grid grid-cols-2 gap-1 mb-3">
                 <button
-                    className={`min-w-[11rem] min-h-[2.75rem] rounded-xl cursor-pointer transition ${tradeForm.activeTradeTab === 'Long' ? 'bg-teal-500' : 'bg-gray-400'}`}
-                    onClick={() => 
-                    onTradeFormChange({activeTradeTab:'Long'})}>
-
-                    Buy/Long
+                    onClick={() => setOrderType('Limit')}
+                    className={`py-1.5 text-xs rounded cursor-pointer transition ${
+                        orderType === 'Limit'
+                            ? 'bg-white/10 text-white'
+                            : 'text-gray-500 hover:text-gray-300'
+                    }`}
+                >
+                    Limit
                 </button>
-
-                <button className={`min-w-[11rem] min-h-[2.75rem] rounded-xl
-                cursor-pointer transition ${tradeForm.activeTradeTab === 'Short' ? 'bg-rose-400' : 'bg-gray-400'}`}
-                    onClick={() => onTradeFormChange({activeTradeTab: 'Short'})
-                    }>
-                    Sell/Short
+                <button
+                    onClick={() => setOrderType('Market')}
+                    className={`py-1.5 text-xs rounded cursor-pointer transition ${
+                        orderType === 'Market'
+                            ? 'bg-white/10 text-white'
+                            : 'text-gray-500 hover:text-gray-300'
+                    }`}
+                >
+                    Market
                 </button>
             </div>
 
-            <div className="col-span-6 flex flex-col gap-1 p-[1rem]">
-                <div className="flex justify-between ">
-                    <div>
-                        Avalaible to Trade
-                    </div>
-                    <div>
-                        {availableBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                    </div>
-                </div>
-
-                <div className="flex justify-between">
-                    <div>
-                        Current Position
-                    </div>
-                    <div>
-                        —
-                    </div>
-                </div>
+            {/* Long / Short toggle */}
+            <div className="grid grid-cols-2 gap-1 mb-4">
+                <button
+                    className={`py-2 text-xs font-semibold rounded cursor-pointer transition ${
+                        isLong
+                            ? 'bg-emerald-500 text-black'
+                            : 'bg-white/5 text-gray-400 hover:text-gray-200'
+                    }`}
+                    onClick={() => onTradeFormChange({ activeTradeTab: 'Long' })}
+                >
+                    Long
+                </button>
+                <button
+                    className={`py-2 text-xs font-semibold rounded cursor-pointer transition ${
+                        !isLong
+                            ? 'bg-rose-500 text-white'
+                            : 'bg-white/5 text-gray-400 hover:text-gray-200'
+                    }`}
+                    onClick={() => onTradeFormChange({ activeTradeTab: 'Short' })}
+                >
+                    Short
+                </button>
             </div>
 
-            <div className="col-span-6 flex flex-col gap-2">
-                <div className="relative w-full
-                bg-transparent border rounded-xl flex text-white justify-between p-2
-                transition-colors
-                hover:border-teal-400
-                focus-within:border-teal-400
-                focus-within:ring-1
-                focus-within:ring-teal-400
-                ">
-                    <div className="text-gray-400">Market Price</div>
-                    <div className="text-right pr-2">
-                        {currentMarkPrice != null ? `$${currentMarkPrice.toFixed(2)}` : '—'}
-                    </div>
-
-                </div>
-
-                <div className="relative w-full
-                bg-transparent border rounded-xl flex text-white justify-between p-2
-                transition-colors
-                hover:border-teal-400
-                focus-within:border-teal-400
-                focus-within:ring-1
-                focus-within:ring-teal-400
-                ">
-                    {/* Fake placeholder */}
-                    {!tradeForm.size && (
-                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
-                            Size
-                        </span>
-                    )}
+            {/* Price */}
+            <div className="mb-2">
+                <label className="text-[10px] uppercase tracking-wider text-gray-500 mb-1 block">Price</label>
+                <div className="flex items-center bg-white/5 border border-white/10 rounded px-3 py-2">
                     <input
-                        name="size"
-                        id="sizeField"
-                        className="w-full text-right bg-transparent appearance-none outline-none"
+                        type="text"
+                        className="min-w-0 flex-1 bg-transparent text-sm font-mono text-white outline-none"
+                        value={tradeForm.inputPrice || (currentMarkPrice != null ? currentMarkPrice.toFixed(1) : '')}
+                        onChange={(e) => onTradeFormChange({ inputPrice: e.target.value })}
+                        placeholder="0.0"
+                    />
+                    <span className="text-xs text-gray-500 ml-2">USDC</span>
+                </div>
+            </div>
+
+            {/* Size */}
+            <div className="mb-2">
+                <label className="text-[10px] uppercase tracking-wider text-gray-500 mb-1 block">Size</label>
+                <div className="relative flex items-center bg-white/5 border border-white/10 rounded px-3 py-2">
+                    <input
+                        type="text"
+                        className="min-w-0 w-full bg-transparent pr-24 text-sm font-mono text-white outline-none"
                         value={tradeForm.size}
                         onChange={(e) => {
-                            const onlyNumbers = e.target.value.replace(/\D/g, '');
+                            const val = e.target.value.replace(/[^0-9.]/g, '');
+                            onTradeFormChange({ size: val });
+                        }}
+                        placeholder="0.0000"
+                    />
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2" ref={sizeUnitMenuRef}>
+                        <button
+                            type="button"
+                            onClick={() => setSizeUnitMenuOpen((prev) => !prev)}
+                            className="h-7 min-w-[76px] rounded border border-white/10 bg-[#161d29] px-2 pr-5 text-[11px] font-medium text-gray-200 outline-none transition hover:text-white text-left"
+                        >
+                            {selectedSizeUnit}
+                            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-gray-500">
+                                v
+                            </span>
+                        </button>
+                        {sizeUnitMenuOpen ? (
+                            <div className="absolute right-0 mt-1 w-[92px] overflow-hidden rounded-md border border-white/10 bg-[#111823] shadow-lg shadow-black/40 z-20">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        switchSizeUnit(symbol);
+                                        setSizeUnitMenuOpen(false);
+                                    }}
+                                    className={`w-full px-2 py-1.5 text-left text-[11px] transition ${
+                                        selectedSizeUnit === symbol
+                                            ? 'text-white bg-white/10'
+                                            : 'text-gray-300 hover:bg-white/5'
+                                    }`}
+                                >
+                                    {symbol}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        switchSizeUnit('USDC');
+                                        setSizeUnitMenuOpen(false);
+                                    }}
+                                    className={`w-full px-2 py-1.5 text-left text-[11px] transition ${
+                                        selectedSizeUnit === 'USDC'
+                                            ? 'text-white bg-white/10'
+                                            : 'text-gray-300 hover:bg-white/5'
+                                    }`}
+                                >
+                                    USDC
+                                </button>
+                            </div>
+                        ) : null}
+                    </div>
+                </div>
+                <div className="mt-1 text-[11px] text-gray-500">
+                    {selectedSizeUnit === symbol ? (
+                        Number.isFinite(Number(estimatedUsdcValue)) && (estimatedUsdcValue as number) > 0
+                            ? `Worth: ${formatDecimal(estimatedUsdcValue as number, 2)} USDC`
+                            : 'Worth: — USDC'
+                    ) : (
+                        Number.isFinite(Number(estimatedCoinValue)) && (estimatedCoinValue as number) > 0
+                            ? `Est. Qty: ${formatDecimal(estimatedCoinValue as number, 6)} ${symbol}`
+                            : `Est. Qty: — ${symbol}`
+                    )}
+                </div>
+            </div>
 
-                            onTradeFormChange({size: onlyNumbers})
-                        }}
-                    />
-                    <Dropdown
-                        value={tradeForm.tradeAsset}
-                        onChange={(val) => {
-                            onTradeFormChange({tradeAsset: val})
-                            setOpenMenu(null)
-                        }}
-                        options={[
-                            { key: symbol + '1', label: symbol, value: symbol },
-                            { key: 'USDC-1', label: 'USDC', value: 'USDC' }
-                        ]}
-                        isOpen={openMenu === 'tradeAsset'}
-                        onToggle={() => {
-                            setOpenMenu(openMenu === 'tradeAsset' ? null : 'tradeAsset')
-                        }}
-                    />
-                </div>
-                <div className="relative w-full
-                bg-transparent border rounded-xl flex text-white justify-between p-2
-                transition-colors
-                hover:border-teal-400
-                focus-within:border-teal-400
-                focus-within:ring-1
-                focus-within:ring-teal-400
-                ">
-                    <div className="text-gray-400">Leverage</div>
-                    <select
-                        className="bg-transparent outline-none text-right"
-                        value={tradeForm.leverage}
-                        onChange={(e) => onTradeFormChange({ leverage: Number(e.target.value) })}
-                    >
-                        {[1, 2, 5, 10].map((lev) => (
-                            <option key={lev} value={lev} className="text-black">
-                                {lev}x
-                            </option>
-                        ))}
-                    </select>
+            {/* Leverage */}
+            <div className="mb-4">
+                <label className="text-[10px] uppercase tracking-wider text-gray-500 mb-1 block">Leverage</label>
+                <div className="grid grid-cols-6 gap-1">
+                    {leverageOptions.map((lev) => (
+                        <button
+                            key={lev}
+                            onClick={() => onTradeFormChange({ leverage: lev })}
+                            className={`py-1.5 text-xs rounded cursor-pointer transition ${
+                                tradeForm.leverage === lev
+                                    ? 'bg-white/15 text-white'
+                                    : 'bg-white/5 text-gray-500 hover:text-gray-300'
+                            }`}
+                        >
+                            {lev}x
+                        </button>
+                    ))}
                 </div>
             </div>
-            <div className="col-span-6 flex justify-center">
-                <button 
-                className={`${tradeForm.activeTradeTab === "Long" ? 'bg-green-400' : 'bg-red-400'} cursor-pointer text-white rounded-2xl min-w-[11rem] min-h-[2.75rem] m-2`}
+
+            {/* Info rows */}
+            <div className="flex flex-col gap-1.5 mb-4 text-xs">
+                <div className="flex justify-between">
+                    <span className="text-gray-500">Entry Price (est.)</span>
+                    <span className="text-gray-300">
+                        {hasSize ? `${formatPrice(referencePrice)} USDC` : '—'}
+                    </span>
+                </div>
+                <div className="flex justify-between">
+                    <span className="text-gray-500">Position Notional</span>
+                    <span className="text-gray-300">{formatUsdc(positionNotionalUsdc)}</span>
+                </div>
+                <div className="flex justify-between">
+                    <span className="text-gray-500">Margin Required</span>
+                    <span className="text-gray-300">{formatUsdc(marginRequiredUsdc)}</span>
+                </div>
+                <div className="flex justify-between">
+                    <span className="text-gray-500">Est. Liquidation</span>
+                    <span className="text-gray-300">
+                        {hasSize ? `${formatPrice(estimatedLiquidationPrice)} USDC` : '—'}
+                    </span>
+                </div>
+                <div className="flex justify-between">
+                    <span className="text-gray-500">Fees (est.)</span>
+                    <span className="text-gray-300">{formatUsdc(estimatedFeesUsdc)}</span>
+                </div>
+                <div className="flex justify-between">
+                    <span className="text-gray-500">Max Loss (est.)</span>
+                    <span className="text-gray-300">{formatUsdc(maxLossUsdc)}</span>
+                </div>
+            </div>
+
+            {/* Submit */}
+            <button
                 onClick={onPositionSubmit}
-                >
-                {tradeForm.activeTradeTab === "Long" ? 'Long' : 'Short'} 
-                </button>
-            </div>
+                className={`w-full py-3 rounded text-sm font-semibold cursor-pointer transition ${
+                    isLong
+                        ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
+                        : 'bg-rose-500/10 border border-rose-500/30 text-rose-400 hover:bg-rose-500/20'
+                }`}
+            >
+                Open {isLong ? 'Long' : 'Short'}
+            </button>
         </div>
-    )
+    );
 }
