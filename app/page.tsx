@@ -489,10 +489,10 @@ export default function OrderBook() {
                   fixedAsks={fixedAsks}
                   fixedBids={fixedBids}
                   spread={spread}
+                  markPrice={markPrice}
                   maxAskTotal={orderBookDenomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
                   maxBidTotal={orderBookDenomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
                   denomination={orderBookDenomination}
-                  symbol={symbol}
                   error={error}
                   onPriceSelect={(price) => callbackTradeForm({ inputPrice: price })}
                 />

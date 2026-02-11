@@ -106,17 +106,21 @@ export function PriceChart({
 
         return () => {
             const candleSeries = candleSeriesRef.current;
+
             if (candleSeries) {
                 orderLinesRef.current.forEach((line) => {
                     candleSeries.removePriceLine(line);
                 });
                 orderLinesRef.current.clear();
             }
+
+
             window.removeEventListener('resize', handleResize);
             chart.remove();
             chartRef.current = null;
             candleSeriesRef.current = null;
             volumeSeriesRef.current = null;
+            didSetInitialDataRef.current = false;
         };
     }, []);
 

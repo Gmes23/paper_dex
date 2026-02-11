@@ -22,9 +22,11 @@ export function useWebSocket({
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const orderBookCbRef = useRef(onOrderBookUpdate);
   const tradesCbRef = useRef(onTradesUpdate);
-  const tradeCountRef = useRef(0);
-  const lastTradeTimeRef = useRef<number | null>(null);
-  const lastLogTimeRef = useRef(0);
+
+  // logging for race conditon, can be removed
+  // const tradeCountRef = useRef(0);
+  // const lastTradeTimeRef = useRef<number | null>(null);
+  // const lastLogTimeRef = useRef(0);
 
   useEffect(() => {
     orderBookCbRef.current = onOrderBookUpdate;
@@ -52,7 +54,7 @@ export function useWebSocket({
           return;
         }
 
-        console.log('WebSocket connected');
+        // console.log('WebSocket connected');
         setIsConnected(true);
 
         ws.send(JSON.stringify({
@@ -72,7 +74,7 @@ export function useWebSocket({
           }
         }));
 
-        console.log(`Subscribed to orderbook and trades for: ${symbol}`);
+        // console.log(`Subscribed to orderbook and trades for: ${symbol}`);
       };
 
       ws.onmessage = (event) => {
@@ -85,25 +87,31 @@ export function useWebSocket({
             orderBookCbRef.current(data.data);
           } else if (data.channel === 'trades' && data.data) {
             tradesCbRef.current(data.data);
-            tradeCountRef.current += Array.isArray(data.data) ? data.data.length : 1;
-            const lastTrade = Array.isArray(data.data)
-              ? data.data[data.data.length - 1]
-              : data.data;
-            if (lastTrade?.time) {
-              lastTradeTimeRef.current = Number(lastTrade.time);
-            }
 
-            const now = Date.now();
-            if (now - lastLogTimeRef.current > 5000) {
-              lastLogTimeRef.current = now;
-              console.log('[WebSocket] Trades received', {
-                symbol,
-                count: tradeCountRef.current,
-                lastTradeTime: lastTradeTimeRef.current
-                  ? new Date(lastTradeTimeRef.current).toISOString()
-                  : null,
-              });
-            }
+
+            // logging for worker race conditon, can be removed
+            // tradeCountRef.current += Array.isArray(data.data) ? data.data.length : 1;
+            // const lastTrade = Array.isArray(data.data)
+            //   ? data.data[data.data.length - 1]
+            //   : data.data;
+            // if (lastTrade?.time) {
+            //   lastTradeTimeRef.current = Number(lastTrade.time);
+            // }
+
+            // const now = Date.now();
+            // if (now - lastLogTimeRef.current > 5000) {
+            //   lastLogTimeRef.current = now;
+            //   console.log('[WebSocket] Trades received', {
+            //     symbol,
+            //     count: tradeCountRef.current,
+            //     lastTradeTime: lastTradeTimeRef.current
+            //       ? new Date(lastTradeTimeRef.current).toISOString()
+            //       : null,
+            //   });
+            // }
+
+
+
           }
         } catch (error) {
           console.error('Error parsing message:', error);
@@ -112,7 +120,7 @@ export function useWebSocket({
 
       ws.onerror = (error) => {
         if (cancelled || wsRef.current !== ws) return;
-        console.error('WebSocket error:', error);
+        // console.error('WebSocket error:', error);
         setIsConnected(false);
       };
 
@@ -122,12 +130,12 @@ export function useWebSocket({
         }
         if (cancelled) return;
 
-        console.log('WebSocket disconnected');
+        // console.log('WebSocket disconnected');
         setIsConnected(false);
 
         reconnectTimeoutRef.current = setTimeout(() => {
           if (cancelled) return;
-          console.log('Attempting to reconnect...');
+          // console.log('Attempting to reconnect...');
           connect();
         }, RECONNECT_DELAY);
       };

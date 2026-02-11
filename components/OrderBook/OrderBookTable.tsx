@@ -1,16 +1,15 @@
-import type { ProcessedLevel, Denomination, Symbol } from '@/lib/types';
+import type { ProcessedLevel, Denomination } from '@/lib/types';
 import { OrderBookRow } from './OrderBookRow';
 import { SpreadIndicator } from './SpreadIndicator';
-import { getDenomLabel } from '@/lib/utils';
 
 interface OrderBookTableProps {
     fixedAsks: (ProcessedLevel | null)[];
     fixedBids: (ProcessedLevel | null)[];
     spread: { value: number; percentage: number } | null;
+    markPrice: number | null;
     maxAskTotal: number;
     maxBidTotal: number;
     denomination: Denomination;
-    symbol: Symbol;
     error: string | null;
     onPriceSelect?: (price: string) => void;
 }
@@ -19,10 +18,10 @@ export function OrderBookTable({
     fixedAsks,
     fixedBids,
     spread,
+    markPrice,
     maxAskTotal,
     maxBidTotal,
     denomination,
-    symbol,
     error,
     onPriceSelect
 }: OrderBookTableProps) {
@@ -71,7 +70,7 @@ export function OrderBookTable({
             </div>
 
             {/* Spread */}
-            <SpreadIndicator spread={spread} />
+            <SpreadIndicator spread={spread} markPrice={markPrice} />
 
             {/* Bids */}
             <div className="flex flex-col">

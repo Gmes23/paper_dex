@@ -43,7 +43,20 @@ export function useTrades({ symbol, source }: UseTradesProps) {
       };
     });
 
-    setTrades(prev => [...newTrades, ...prev].slice(0, MAX_TRADES));
+    // setTrades(prev => [...newTrades, ...prev].slice(0, MAX_TRADES));
+    setTrades(prevState => {
+      const combined = new Array(Math.min(newTrades.length + prevState.length, MAX_TRADES));
+
+      newTrades.forEach((t, i) => combined[i] = t);
+      prevState.forEach((t, i) => {
+        if(i + newTrades.length < MAX_TRADES) {
+          combined[i + newTrades.length] = t;
+        }
+      });
+      return combined;
+    })
+
+
   }, []);
 
   const resetTrades = useCallback(() => {
