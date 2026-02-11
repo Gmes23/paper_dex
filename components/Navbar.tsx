@@ -50,7 +50,7 @@ export function Navbar({ symbol, markPrice, availableBalance, onSymbolChange, sy
   }, []);
 
   return (
-    <nav className="w-full px-5 py-3  text-white flex items-center justify-between">
+    <nav className="w-full px-5 pt-7 pb-3  text-white flex items-center justify-between">
       <div className="flex items-center gap-4">
         <span className="font-semibold text-sm tracking-wide uppercase">Paper Dex</span>
 
@@ -58,7 +58,7 @@ export function Navbar({ symbol, markPrice, availableBalance, onSymbolChange, sy
           <button
             type="button"
             onClick={() => setMarketMenuOpen((prev) => !prev)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded border border-white/10 bg-white/5 text-sm cursor-pointer hover:bg-white/10 transition"
+            className="flex items-center gap-2 px-3 py-1.5 rounded border border-white/10 bg-white/5 text-sm cursor-pointer hover:bg-white/10 transition rounded-xl"
           >
             <span className="text-gray-300">{symbol}/USDT</span>
             <span className="text-green-400 font-mono">

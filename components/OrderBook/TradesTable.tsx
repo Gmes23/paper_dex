@@ -14,13 +14,13 @@ export function TradesTable({ trades, denomination, symbol, onToggleDenomination
   const getTradeHeight = (trade: ProcessedTrade): string => {
     const size = denomination === 'asset' ? trade.size : trade.sizeUsdc;
 
-    if (size >= 10000) return 'h-50';     
-    if (size >= 5000) return 'h-20';      
-    if (size >= 3000) return 'h-16';      
-    if (size >= 1000) return 'h-12';      
-    if (size >= 50) return 'h-10';       
-    return 'h-8';    
-  }
+    if (size >= 10000) return 'h-[50px]';
+    if (size >= 5000) return 'h-[40px]';
+    if (size >= 3000) return 'h-[34px]';
+    if (size >= 1000) return 'h-[30px]';
+    if (size >= 50) return 'h-[26px]';
+    return 'h-[22px]';
+  };
 
 
   return (
@@ -41,34 +41,32 @@ export function TradesTable({ trades, denomination, symbol, onToggleDenomination
 
       {/* Trades List */}
       <div className="h-full overflow-y-auto">
-        {trades.map((trade) => (
+        {trades.map((trade) => {
+          const rowTheme =
+            trade.side === 'buy'
+              ? 'bg-emerald-500/18 border-emerald-400/30 text-emerald-100 hover:bg-emerald-500/24'
+              : 'bg-rose-500/18 border-rose-400/30 text-rose-100 hover:bg-rose-500/24';
 
-            <div key={trade.id} className={`${trade.side === 'buy' ? 'bg-green-500' : 'bg-red-300' } text-black`}>
-          <div
-            key={trade.id}
-            className={`grid grid-cols-3 gap-2 px-4 py-1.5 text-sm hover:bg-[#1e222d] transition-colors
-            border
-            ${getTradeHeight(trade)}
-            `}
-          >
-            <div
-              className={`font-mono text-left 
-                text-xs text-black
-              `}
-            >
-              {trade.price}
-            </div>
+          return (
+            <div key={trade.id} className="px-2 py-0.5">
+              <div
+                className={`grid grid-cols-3 gap-2 items-center px-3 transition-colors cursor-pointer ${getTradeHeight(trade)} ${rowTheme}`}
+              >
+                <div className="font-mono text-left text-xs">
+                  {trade.price}
+                </div>
 
-            <div className="text-right text-black-300 font-mono text-xs">
-              {formatSize(trade.size, trade.sizeUsdc, denomination)}
-            </div>
+                <div className="text-right font-mono text-xs">
+                  {formatSize(trade.size, trade.sizeUsdc, denomination)}
+                </div>
 
-            <div className="text-right text-black-500 text-xs">
-              {trade.time}
+                <div className="text-right text-xs text-white/80">
+                  {trade.time}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

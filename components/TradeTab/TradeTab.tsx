@@ -6,6 +6,8 @@ interface TradeTableProps {
     openMenu: string | null;
     setOpenMenu: (menu: string | null) => void;
     onTradeFormChange: (value: Partial<TradeFormState>) => void;
+    onClearFormError: () => void;
+    formError: string | null;
     tradeForm: TradeFormState;
     onPositionSubmit: (submission: { orderType: 'market' | 'limit'; stopLossPrice: number | null }) => void;
     currentMarkPrice: number | null;
@@ -14,6 +16,8 @@ interface TradeTableProps {
 export function TradeTab({
     symbol,
     onTradeFormChange,
+    onClearFormError,
+    formError,
     tradeForm,
     onPositionSubmit,
     currentMarkPrice
@@ -21,6 +25,7 @@ export function TradeTab({
     const [orderType, setOrderType] = useState<'Limit' | 'Market'>('Limit');
     const [stopLossEnabled, setStopLossEnabled] = useState(false);
     const [stopLossInput, setStopLossInput] = useState('');
+    const [localFormError, setLocalFormError] = useState<string | null>(null);
     const [sizeUnitMenuOpen, setSizeUnitMenuOpen] = useState(false);
     const isLong = tradeForm.activeTradeTab === 'Long';
     const leverageOptions = [1, 2, 5, 10];
@@ -71,13 +76,32 @@ export function TradeTab({
         stopLossEnabled && Number.isFinite(parsedStopLoss) && parsedStopLoss > 0
             ? parsedStopLoss
             : null;
+    const isMarketOrder = orderType === 'Market';
+    const displayFormError = localFormError ?? formError;
+    const displayedPriceValue = isMarketOrder
+        ? (currentMarkPrice != null ? currentMarkPrice.toFixed(1) : '')
+        : tradeForm.inputPrice;
+    const clearFormErrors = () => {
+        setLocalFormError(null);
+        onClearFormError();
+    };
+    const applyTradeFormChange = (value: Partial<TradeFormState>) => {
+        clearFormErrors();
+        onTradeFormChange(value);
+    };
+
     const handleSubmit = () => {
+        clearFormErrors();
+        if (isMarketOrder && (!Number.isFinite(Number(currentMarkPrice)) || Number(currentMarkPrice) <= 0)) {
+            setLocalFormError('Market price unavailable. Please wait for live price.');
+            return;
+        }
         if (stopLossEnabled && stopLossPrice == null) {
-            alert('Enter a valid stop loss price');
+            setLocalFormError('Please enter a valid stop loss price.');
             return;
         }
         onPositionSubmit({
-            orderType: orderType === 'Market' ? 'market' : 'limit',
+            orderType: isMarketOrder ? 'market' : 'limit',
             stopLossPrice,
         });
     };
@@ -108,19 +132,19 @@ export function TradeTab({
 
         const currentValue = Number(tradeForm.size);
         if (!Number.isFinite(currentValue) || currentValue <= 0 || !hasReferencePrice) {
-            onTradeFormChange({ tradeAsset: nextUnit });
+            applyTradeFormChange({ tradeAsset: nextUnit });
             return;
         }
 
         if (nextUnit === 'USDC') {
-            onTradeFormChange({
+            applyTradeFormChange({
                 tradeAsset: 'USDC',
                 size: formatDecimal(currentValue * referencePrice, 2),
             });
             return;
         }
 
-        onTradeFormChange({
+        applyTradeFormChange({
             tradeAsset: nextUnit,
             size: formatDecimal(currentValue / referencePrice, 6),
         });
@@ -148,7 +172,10 @@ export function TradeTab({
             {/* Limit / Market toggle */}
             <div className="grid grid-cols-2 gap-1 mb-3">
                 <button
-                    onClick={() => setOrderType('Limit')}
+                    onClick={() => {
+                        clearFormErrors();
+                        setOrderType('Limit');
+                    }}
                     className={`py-1.5 text-xs rounded cursor-pointer transition ${
                         orderType === 'Limit'
                             ? 'bg-white/10 text-white'
@@ -158,7 +185,10 @@ export function TradeTab({
                     Limit
                 </button>
                 <button
-                    onClick={() => setOrderType('Market')}
+                    onClick={() => {
+                        clearFormErrors();
+                        setOrderType('Market');
+                    }}
                     className={`py-1.5 text-xs rounded cursor-pointer transition ${
                         orderType === 'Market'
                             ? 'bg-white/10 text-white'
@@ -177,7 +207,7 @@ export function TradeTab({
                             ? 'bg-emerald-500 text-black'
                             : 'bg-white/5 text-gray-400 hover:text-gray-200'
                     }`}
-                    onClick={() => onTradeFormChange({ activeTradeTab: 'Long' })}
+                    onClick={() => applyTradeFormChange({ activeTradeTab: 'Long' })}
                 >
                     Long
                 </button>
@@ -187,7 +217,7 @@ export function TradeTab({
                             ? 'bg-rose-500 text-white'
                             : 'bg-white/5 text-gray-400 hover:text-gray-200'
                     }`}
-                    onClick={() => onTradeFormChange({ activeTradeTab: 'Short' })}
+                    onClick={() => applyTradeFormChange({ activeTradeTab: 'Short' })}
                 >
                     Short
                 </button>
@@ -199,13 +229,25 @@ export function TradeTab({
                 <div className="flex items-center bg-white/5 border border-white/10 rounded px-3 py-2">
                     <input
                         type="text"
-                        className="min-w-0 flex-1 bg-transparent text-sm font-mono text-white outline-none"
-                        value={tradeForm.inputPrice || (currentMarkPrice != null ? currentMarkPrice.toFixed(1) : '')}
-                        onChange={(e) => onTradeFormChange({ inputPrice: e.target.value })}
-                        placeholder="0.0"
+                        readOnly={isMarketOrder}
+                        className={`min-w-0 flex-1 bg-transparent text-sm font-mono outline-none ${
+                            isMarketOrder ? 'text-cyan-300 cursor-not-allowed' : 'text-white'
+                        }`}
+                        value={displayedPriceValue}
+                        onChange={(e) => {
+                            if (isMarketOrder) return;
+                            const value = e.target.value.replace(/[^0-9.]/g, '');
+                            applyTradeFormChange({ inputPrice: value });
+                        }}
+                        placeholder={isMarketOrder ? 'Waiting for live market...' : '0.0'}
                     />
                     <span className="text-xs text-gray-500 ml-2">USDC</span>
                 </div>
+                {isMarketOrder ? (
+                    <div className="mt-1 text-[11px] text-cyan-300/80">
+                        Market price locked
+                    </div>
+                ) : null}
             </div>
 
             {/* Stop Loss */}
@@ -214,7 +256,10 @@ export function TradeTab({
                     <label className="text-[10px] uppercase tracking-wider text-gray-500">Stop Loss</label>
                     <button
                         type="button"
-                        onClick={() => setStopLossEnabled((prev) => !prev)}
+                        onClick={() => {
+                            clearFormErrors();
+                            setStopLossEnabled((prev) => !prev);
+                        }}
                         className={`px-2 py-0.5 rounded text-[10px] transition cursor-pointer ${
                             stopLossEnabled
                                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
@@ -230,7 +275,10 @@ export function TradeTab({
                         disabled={!stopLossEnabled}
                         className="min-w-0 flex-1 bg-transparent text-sm font-mono text-white outline-none disabled:text-gray-600"
                         value={stopLossInput}
-                        onChange={(e) => setStopLossInput(e.target.value.replace(/[^0-9.]/g, ''))}
+                        onChange={(e) => {
+                            clearFormErrors();
+                            setStopLossInput(e.target.value.replace(/[^0-9.]/g, ''));
+                        }}
                         placeholder={stopLossEnabled ? '0.0' : 'Enable to set stop loss'}
                     />
                     <span className="text-xs text-gray-500 ml-2">USDC</span>
@@ -243,34 +291,37 @@ export function TradeTab({
                 <div className="relative flex items-center bg-white/5 border border-white/10 rounded px-3 py-2">
                     <input
                         type="text"
-                        className="min-w-0 w-full bg-transparent pr-24 text-sm font-mono text-white outline-none"
+                        className="min-w-0 w-full bg-transparent pr-20 text-sm font-mono text-white outline-none"
                         value={tradeForm.size}
                         onChange={(e) => {
                             const val = e.target.value.replace(/[^0-9.]/g, '');
-                            onTradeFormChange({ size: val });
+                            applyTradeFormChange({ size: val });
                         }}
                         placeholder="0.0000"
                     />
                     <div className="absolute right-2 top-1/2 -translate-y-1/2" ref={sizeUnitMenuRef}>
                         <button
                             type="button"
-                            onClick={() => setSizeUnitMenuOpen((prev) => !prev)}
-                            className="h-7 min-w-[76px] rounded border border-white/10 bg-[#161d29] px-2 pr-5 text-[11px] font-medium text-gray-200 outline-none transition hover:text-white text-left"
+                            onClick={() => {
+                                clearFormErrors();
+                                setSizeUnitMenuOpen((prev) => !prev);
+                            }}
+                            className="h-6 min-w-[64px] rounded border border-white/10 bg-[#161d29] px-2 pr-4 text-[11px] font-medium text-gray-200 outline-none transition hover:text-white text-left cursor-pointer"
                         >
                             {selectedSizeUnit}
-                            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-gray-500">
+                            <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-500">
                                 v
                             </span>
                         </button>
                         {sizeUnitMenuOpen ? (
-                            <div className="absolute right-0 mt-1 w-[92px] overflow-hidden rounded-md border border-white/10 bg-[#111823] shadow-lg shadow-black/40 z-20">
+                            <div className="absolute right-0 mt-1 w-[74px] overflow-hidden rounded-md border border-white/10 bg-[#111823] shadow-lg shadow-black/40 z-20">
                                 <button
                                     type="button"
                                     onClick={() => {
                                         switchSizeUnit(symbol);
                                         setSizeUnitMenuOpen(false);
                                     }}
-                                    className={`w-full px-2 py-1.5 text-left text-[11px] transition ${
+                                    className={`w-full px-2 py-1.5 text-left text-[11px] transition cursor-pointer ${
                                         selectedSizeUnit === symbol
                                             ? 'text-white bg-white/10'
                                             : 'text-gray-300 hover:bg-white/5'
@@ -284,7 +335,7 @@ export function TradeTab({
                                         switchSizeUnit('USDC');
                                         setSizeUnitMenuOpen(false);
                                     }}
-                                    className={`w-full px-2 py-1.5 text-left text-[11px] transition ${
+                                    className={`w-full px-2 py-1.5 text-left text-[11px] transition cursor-pointer ${
                                         selectedSizeUnit === 'USDC'
                                             ? 'text-white bg-white/10'
                                             : 'text-gray-300 hover:bg-white/5'
@@ -316,7 +367,7 @@ export function TradeTab({
                     {leverageOptions.map((lev) => (
                         <button
                             key={lev}
-                            onClick={() => onTradeFormChange({ leverage: lev })}
+                            onClick={() => applyTradeFormChange({ leverage: lev })}
                             className={`py-1.5 text-xs rounded cursor-pointer transition ${
                                 tradeForm.leverage === lev
                                     ? 'bg-white/15 text-white'
@@ -366,6 +417,19 @@ export function TradeTab({
                     </span>
                 </div>
             </div>
+
+            {displayFormError ? (
+                <div className="mb-3 flex justify-end">
+                    <div className="relative group">
+                        <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-rose-400/60 bg-rose-500/20 text-[10px] font-bold text-rose-300">
+                            !
+                        </span>
+                        <div className="pointer-events-none absolute right-0 top-5 z-30 w-56 rounded border border-rose-400/40 bg-[#241018] px-2 py-1 text-[11px] text-rose-200 opacity-0 transition group-hover:opacity-100">
+                            {displayFormError}
+                        </div>
+                    </div>
+                </div>
+            ) : null}
 
             {/* Submit */}
             <button

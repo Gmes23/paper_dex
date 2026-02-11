@@ -217,6 +217,24 @@ export async function POST(req: Request) {
 
     if (orderType === 'limit') {
       const entryReference = Number(limitPrice);
+      const placementMarketPrice = await getMarketPrice(client, symbol, side);
+      if (!placementMarketPrice) {
+        await client.query('ROLLBACK');
+        return NextResponse.json({ error: 'Market data unavailable' }, { status: 503 });
+      }
+
+      const hasValidDirection = side === 'long'
+        ? entryReference < placementMarketPrice
+        : entryReference > placementMarketPrice;
+      if (!hasValidDirection) {
+        await client.query('ROLLBACK');
+        return NextResponse.json({
+          error: side === 'long'
+            ? 'Long limit price must be below current market price'
+            : 'Short limit price must be above current market price',
+        }, { status: 400 });
+      }
+
       if (stopLossPrice != null) {
         const validStop =
           side === 'long' ? stopLossPrice < entryReference : stopLossPrice > entryReference;

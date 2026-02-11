@@ -147,6 +147,7 @@ export default function OrderBook() {
     markPrice: null,
     PNL: null
   });
+  const [tradeFormError, setTradeFormError] = useState<string | null>(null);
 
   const { user, refresh: refreshUser } = useWalletAuth();
   const { positions, refresh: refreshPositions, closePosition } = usePaperPositions();
@@ -225,27 +226,28 @@ export default function OrderBook() {
   );
 
   const addPosition = useCallback(async (submission: { orderType: 'market' | 'limit'; stopLossPrice: number | null }) => {
+    setTradeFormError(null);
     const rawSize = Number(tradeForm.size);
     const inputPrice = Number(tradeForm.inputPrice);
     const referencePrice =
-      Number.isFinite(inputPrice) && inputPrice > 0
-        ? inputPrice
-        : (markPrice ?? 0);
+      submission.orderType === 'market'
+        ? (markPrice ?? 0)
+        : (Number.isFinite(inputPrice) && inputPrice > 0 ? inputPrice : (markPrice ?? 0));
     const positionSize =
       tradeForm.tradeAsset === 'USDC'
         ? rawSize
         : rawSize * referencePrice;
 
     if (!Number.isFinite(positionSize) || positionSize <= 0) {
-      alert('Enter a valid position size');
+      setTradeFormError('Please enter a valid position size.');
       return;
     }
     if (tradeForm.tradeAsset !== 'USDC' && (!Number.isFinite(referencePrice) || referencePrice <= 0)) {
-      alert('Price unavailable. Please enter a valid price.');
+      setTradeFormError('Price unavailable. Please enter a valid price.');
       return;
     }
     if (submission.orderType === 'limit' && (!Number.isFinite(inputPrice) || inputPrice <= 0)) {
-      alert('Enter a valid limit price');
+      setTradeFormError('Please enter a valid limit price.');
       return;
     }
 
@@ -264,8 +266,9 @@ export default function OrderBook() {
         refreshOpenOrders(),
         refreshUser(),
       ]);
+      setTradeFormError(null);
     } catch (err) {
-      alert((err as Error).message ?? 'Failed to place order');
+      setTradeFormError((err as Error).message ?? 'Failed to place order');
     }
   }, [
     markPrice,
@@ -380,6 +383,7 @@ export default function OrderBook() {
   }, [symbol, resetTrades]);
 
   const callbackTradeForm = useCallback((value: Partial<TradeFormState>) => {
+    setTradeFormError(null);
     setTradeForm(prevState => ({ ...prevState, ...value }))
   }, [])
 
@@ -412,7 +416,7 @@ export default function OrderBook() {
             openOrders={symbolOpenOrders}
           />
 
-          <div className="rounded-xl border border-white/10 overflow-hidden">
+          <div className="rounded-xl border border-white/10 overflow-hidden h-[300px] min-h-[300px]">
             <PositionsTable
               userPositions={positions}
               pastTrades={pastTrades}
@@ -512,6 +516,8 @@ export default function OrderBook() {
               openMenu={openMenu}
               setOpenMenu={setOpenMenu}
               onTradeFormChange={callbackTradeForm}
+              onClearFormError={() => setTradeFormError(null)}
+              formError={tradeFormError}
               tradeForm={tradeForm}
               onPositionSubmit={addPosition}
               currentMarkPrice={markPrice}

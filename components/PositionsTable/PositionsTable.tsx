@@ -34,7 +34,7 @@ export function PositionsTable({
     const showOrders = activeTab === 'orders';
 
     return (
-        <div className="bg-[#0d1117]">
+        <div className="bg-[#0d1117] h-full flex flex-col min-h-0">
             {/* Tab pills */}
             <div className="flex items-center gap-2 px-4 py-2">
                 {tabs.map((tab) => (
@@ -55,8 +55,9 @@ export function PositionsTable({
                 ))}
             </div>
 
-            {showPositions ? (
-                <>
+            <div className="flex-1 min-h-0">
+                {showPositions ? (
+                    <div className="h-full flex flex-col min-h-0">
                     <div className="grid grid-cols-9 gap-2 px-4 py-1.5 text-[10px] uppercase tracking-wider text-gray-500 border-b border-white/5">
                         {columns.map((col) => (
                             <div key={col}>{col}</div>
@@ -64,7 +65,8 @@ export function PositionsTable({
                     </div>
 
                     {userPositions.length > 0 ? (
-                        <div className="flex flex-col">
+                        <div className="flex-1 min-h-0 overflow-y-auto">
+                            <div className="flex flex-col">
                             {userPositions.map((position: PaperPosition) => {
                                 const entry = Number(position.entryPrice);
                                 const size = Number(position.positionSize);
@@ -121,18 +123,20 @@ export function PositionsTable({
                                     </div>
                                 );
                             })}
+                            </div>
                         </div>
                     ) : (
-                        <div className="py-6 text-center text-xs text-gray-600">
+                        <div className="flex-1 flex items-center justify-center py-6 text-center text-xs text-gray-600">
                             No open positions
                         </div>
                     )}
-                </>
-            ) : null}
+                    </div>
+                ) : null}
 
-            {showTrades ? <PastTradesTable trades={pastTrades} /> : null}
+                {showTrades ? <PastTradesTable trades={pastTrades} /> : null}
 
-            {showOrders ? <OpenOrdersTable orders={openOrders} onCancelOrder={onCancelOrder} /> : null}
+                {showOrders ? <OpenOrdersTable orders={openOrders} onCancelOrder={onCancelOrder} /> : null}
+            </div>
         </div>
     );
 }
