@@ -1,6 +1,6 @@
 # Paper Dex
 
-Paper Dex is a DEX-style trading exchange for practicing execution with live prices.
+Paper Dex is a DEX style trading exchange for practicing execution with live prices.
 
 Paper DEX is built on live Hyperliquid price feeds.
 Connect your wallet, trade with mock USDC, and test strategies without risking real funds. Prices are streamed in real time via the Hyperliquid WebSocket so you're trading against actual market conditions, not simulations.
