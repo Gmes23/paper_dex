@@ -23,6 +23,9 @@ function getPgPool() {
       user: process.env.PGUSER ?? 'gm',
       database: process.env.PGDATABASE ?? 'fakeprices',
       password: process.env.PGPASSWORD,
+      ssl: process.env.NODE_ENV === 'production'  
+        ? { rejectUnauthorized: false }
+        : false,
       max: Number(process.env.PG_POOL_MAX ?? 20),
       idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS ?? 30_000),
       connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 5_000),
