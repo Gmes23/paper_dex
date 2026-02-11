@@ -1,370 +1,238 @@
-# Hyperliquid Order Book Widget
+# Paper Dex
 
-================================================================================
-HYPERLIQUID ORDER BOOK WIDGET - HOW IT WORKS (SIMPLE OVERVIEW)
-================================================================================
+Paper Dex is a DEX-style trading exchange for practicing execution with live prices.
 
-This project has two parallel data flows:
+Paper DEX is built on live Hyperliquid price feeds.
+Connect your wallet, trade with mock USDC, and test strategies without risking real funds. Prices are streamed in real time via the Hyperliquid WebSocket so you're trading against actual market conditions, not simulations.
 
-1. Mock/Test Flow (for `/test-chart`)
-2. Live Production Flow (Hyperliquid WebSocket → DB → Chart)
+Features:
 
-Both flows can run without breaking each other.
-
-================================================================================
-ARCHITECTURE SUMMARY
-================================================================================
-
-FRONTEND (Next.js UI)
---------------------
-- Displays orderbook, trades, chart, and positions.
-- NEVER writes candles to DB in production.
-- Fetches historical candles from `/api/candles`.
-- Uses WebSocket trades only for visual, real-time candle updates.
-
-BACKEND (Background Service)
-----------------------------
-- Connects directly to Hyperliquid WebSocket.
-- Aggregates trades into 1-minute candles in memory.
-- Flushes candles to Postgres every 5 seconds (UPSERT).
-- Runs continuously when the app starts in Node runtime.
-
-================================================================================
-DATA FLOW (LIVE PRODUCTION)
-================================================================================
-
-Hyperliquid WebSocket
-  ↓
-Backend Service (Node)
-  - receives trades
-  - aggregates 1m candles in memory
-  - flushes to Postgres every 5s
-  ↓
-PostgreSQL `candles` table
-  ↓
-Frontend `/api/candles`
-  - fetches 1m candles
-  - aggregates to 5m/15m/1h on-demand
-  ↓
-Chart renders historical + live updates
-
-================================================================================
-DATA FLOW (MOCK / TEST)
-================================================================================
-
-Mock WebSocket (Frontend only)
-  ↓
-Frontend POST `/api/trades`
-  - saves mock trades
-  - builds mock 1m candles (test only)
-  ↓
-PostgreSQL `candles` table
-  ↓
-Frontend `/api/candles`
-  ↓
-Chart renders historical + live updates
-
-================================================================================
-WHAT THE BACKEND SAVES
-================================================================================
-
-Table: `candles`
-Each row = 1 minute bucket per symbol.
-
-Columns:
-- symbol (BTC, ETH, SOL, etc.)
-- interval = '1m' only (stored)
-- time = epoch seconds (bucket start)
-- open, high, low, close, volume
-
-When a new coin is added to the WebSocket symbols list, it starts writing
-new candle rows automatically (no extra table required).
-
-================================================================================
-HOW THE FRONTEND LOADS DATA
-================================================================================
-
-1. Page loads:
-   - `useChartData` calls `/api/candles?symbol=BTC&interval=5m&limit=500`
-2. API reads 1m candles and aggregates to requested interval.
-3. Chart renders historical data.
-4. Live trades update the current visible candle only (visual).
-5. Completed candles are always sourced from the database.
-
-================================================================================
-IMPORTANT FILES (LIVE PIPELINE)
-================================================================================
-
-- `services/websocketService.ts`
-  - Connects to Hyperliquid WebSocket.
-  - Feeds trades into aggregator.
-
-- `services/candleAggregator.ts`
-  - Builds 1m candles in memory.
-  - Flushes to DB every 5s with UPSERT.
-
-- `services/index.ts`
-  - Starts background services.
-
-- `instrumentation.ts`
-  - Auto-starts services on app launch (Node runtime only).
-
-- `app/api/candles/route.ts`
-  - Reads 1m candles from DB.
-  - Aggregates to 5m/15m/1h on demand.
-
-================================================================================
-IMPORTANT FILES (MOCK / TEST PIPELINE)
-================================================================================
-
-- `hooks/useMockWebSocket.tsx`
-  - Frontend mock trades generator.
-
-- `app/api/trades/route.ts`
-  - Persists mock trades.
-  - Builds 1m candles (test only).
-
-- `/test-chart`
-  - Test page for mock flow.
-
-================================================================================
-KEY RULES
-================================================================================
-
-- Frontend NEVER writes candles in production.
-- Backend writes candles continuously (live WebSocket).
-- Mock flow still works for testing.
-- Charts always read historical candles from the DB.
-
-## Demo
-
-Check out the live application: [https://hyperliquid-orderbook-ws.vercel.app](https://hyperliquid-orderbook-ws.vercel.app)
+Live orderbook and price feeds from Hyperliquid
+Full order management, limit, market, stop loss
+Position tracking with real time PnL / order position
+Persistent trade history via PostgreSQL
+Wallet-based auth for sign in / sign up with signature only, no transactions (similar to lighter.xyz)
 
 ## Features
 
-- **Real-time WebSocket Data**: Live order book and trade updates
-- **Multiple Assets**: Support for BTC and ETH perpetual contracts
-- **Price Grouping**: Adjustable price level aggregation (1, 2, 5, 10 for BTC / 0.1, 0.2, 0.5, 1 for ETH)
-- **Denomination Toggle**: View sizes in asset amount or USDC value
-- **Depth Visualization**: Visual bars showing cumulative order book depth
-- **Flash Animations**: Price level changes highlighted with smooth animations
-- **Trades View**: Real-time trade feed with buy/sell indicators
-- **Responsive Design**: Clean, dark-themed UI optimized for mobile
+- Live order book + trades streaming
+- Real-time chart with candle history from Postgres
+- Wallet auth with signed message (nonce + JWT)
+- Paper trading engine:
+  - Market and limit orders
+  - Optional stoploss attachment
+  - Position tracking with liquidation prices
+- Portfolio state:
+  - Mock USDC total / available / locked balance
+  - Open positions, open orders, trade history
+- Failure-state UX:
+  - Reconnecting banner
+  - Stale/no feed handling
+  - Disabled order form when price feed is unavailable
+- Health endpoint for background services
 
 ## Tech Stack
 
-- **Framework**: Next.js 16 with App Router
-- **Language**: TypeScript
-- **Styling**: Tailwind CSS
-- **WebSocket**: Native WebSocket API
-- **State Management**: React Hooks
+- Next.js 16 (App Router)
+- React 19 + TypeScript
+- Tailwind CSS 4
+- PostgreSQL (`pg`)
+- Hyperliquid WebSocket (live market data)
+- Ethers v6 (wallet signature verification)
 
-## Project Structure
-```
-hyperliquid_widget/
-├── app/
-│   ├── page.tsx                 # Main application component
-│   ├── layout.tsx
-│   └── globals.css              # Global styles and animations
-├── components/
-│   ├── OrderBook/
-│   │   ├── OrderBookHeader.tsx  # Header with controls
-│   │   ├── OrderBookTable.tsx   # Order book display
-│   │   ├── OrderBookRow.tsx     # Individual order book row
-│   │   ├── SpreadIndicator.tsx  # Bid-ask spread display
-│   │   └── TradesTable.tsx      # Trades list display
-│   └── ui/
-│       ├── Dropdown.tsx         # Reusable dropdown component
-│       └── TabSelector.tsx      # Tab switching component
-├── hooks/
-│   ├── useWebSocket.tsx         # WebSocket connection management
-│   ├── useOrderBookState.tsx    # Order book state and aggregation
-│   └── useTrades.tsx            # Trades state management
-└── lib/
-    ├── types.ts                 # TypeScript type definitions
-    ├── constants.ts             # App constants
-    ├── utils.ts                 # Utility functions
-    └── orderbook.ts             # Order book aggregation logic
-```
+## Architecture
 
-## Getting Started
+### Frontend App
 
-### Prerequisites
+- Main trading UI lives in `app/page.tsx`.
+- Uses live websocket (`hooks/useWebSocket.tsx`) or mock feed (`hooks/useMockWebSocket.tsx`) based on `NEXT_PUBLIC_WS_SOURCE`.
+- Order book/trades can be persisted through API routes for snapshots/testing.
 
-- Node.js 18+ 
-- npm or yarn
+### Background Services (Node runtime)
 
-### Installation
+Started from `instrumentation.ts` -> `services/index.ts` when runtime is Node.js:
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd hyperliquid_widget
-```
+1. `HyperliquidWebSocketService` (`services/websocketService.ts`)
+   - Subscribes to live trade streams.
+2. `CandleAggregator` (`services/candleAggregator.ts`)
+   - Aggregates live trades into 1m candles.
+   - Flushes candles to Postgres on interval/buffer/shutdown.
+3. `LiquidationService` (`services/liquidationService.ts`)
+   - Periodically checks open positions against mark price.
+   - Handles liquidation and balance updates.
 
-2. Install dependencies:
+### Data Modes
+
+- `NEXT_PUBLIC_WS_SOURCE=live`
+  - Frontend uses live feed.
+  - Background live ingestion + candle writes run.
+- `NEXT_PUBLIC_WS_SOURCE=mock` (default)
+  - Frontend uses mock generator.
+  - Live ingestion is disabled.
+  - Mock trades/orderbook can still be stored via API.
+
+## Prerequisites
+
+- Node.js 18+
+- npm
+- PostgreSQL 14+ (or compatible)
+- Browser wallet extension (MetaMask or compatible EIP-1193 provider)
+
+## Project Setup
+
+1. Install dependencies:
+
 ```bash
 npm install
 ```
 
-3. Run the development server:
-```bash
-npm run dev
-```
-
-4. Open [http://localhost:3000](http://localhost:3000) in your browser
-
-## Environment Setup (Required)
-
-Create a `.env.local` file at the project root with the following:
+2. Create `.env.local`:
 
 ```bash
-# Use live Hyperliquid websocket in the frontend
+# App mode: live or mock
 NEXT_PUBLIC_WS_SOURCE=live
 
-# JWT secret for wallet auth (required)
-JWT_SECRET=replace_with_long_random_string
+# Required for auth token signing
+JWT_SECRET=replace_with_a_long_random_secret
 
-# Symbols for the backend candle service (optional)
+# Postgres connection (defaults shown)
+PGHOST=localhost
+PGPORT=5432
+PGUSER=gm
+PGDATABASE=fakeprices
+PGPASSWORD=
+
+# Optional pool tuning
+PG_POOL_MAX=20
+PG_IDLE_TIMEOUT_MS=30000
+PG_CONNECT_TIMEOUT_MS=5000
+
+# Optional live ingestion config
 WS_SYMBOLS=BTC,ETH,SOL,ARB
-
-# Candle flush interval (optional)
 CANDLE_FLUSH_INTERVAL_MS=5000
+
+# Optional: required only for /api/cron/cleanup-candles
+CRON_SECRET=replace_with_random_cron_secret
 ```
 
-Restart the dev server after editing `.env.local`.
+3. Create database (if needed):
 
-## Database Setup (Required)
+```bash
+createdb -h localhost -U gm fakeprices
+```
 
-This project expects a PostgreSQL database. Defaults are defined in `lib/pgClient.ts`:
-
-- `PGHOST` defaults to `localhost`
-- `PGPORT` defaults to `5432`
-- `PGUSER` defaults to `gm`
-- `PGDATABASE` defaults to `fakeprices`
-- `PGPASSWORD` must be provided if your DB requires a password
-
-Apply the schema:
+4. Apply schema:
 
 ```bash
 psql -h localhost -U gm -d fakeprices -f scripts/psql_schema.sql
 ```
 
-If you use `DATABASE_URL`, set it in `.env.local` or your shell.
-
-## Running the App
+5. Start the app:
 
 ```bash
 npm run dev
 ```
 
-You should see logs like:
+6. Open:
 
-- `[Services] Initializing background services...`
-- `[WebSocket] Connected to Hyperliquid`
-- `[Candle Aggregator] Flushed X candles to DB`
+- `http://localhost:3000`
 
-## Notes
+## Environment Variables
 
-- `/test-chart` uses the mock WebSocket and persists mock trades via `/api/trades`.
-- Production candles are written by the backend WebSocket service (not the frontend).
-- On Vercel (serverless), the background service will not run. Use Railway/Render/VPS for 24/7 ingestion.
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `NEXT_PUBLIC_WS_SOURCE` | No | `mock` | Frontend feed source and live-ingestion toggle (`mock` or `live`) |
+| `JWT_SECRET` | Yes | - | Signs/verifies auth JWT |
+| `PGHOST` | No | `localhost` | Postgres host |
+| `PGPORT` | No | `5432` | Postgres port |
+| `PGUSER` | No | `gm` | Postgres user |
+| `PGDATABASE` | No | `fakeprices` | Postgres database |
+| `PGPASSWORD` | Sometimes | empty | Postgres password (if your DB requires one) |
+| `PG_POOL_MAX` | No | `20` | Postgres pool max connections |
+| `PG_IDLE_TIMEOUT_MS` | No | `30000` | Pool idle timeout |
+| `PG_CONNECT_TIMEOUT_MS` | No | `5000` | Pool connection timeout |
+| `WS_SYMBOLS` | No | `BTC,ETH,SOL,ARB` | Live ingestion symbols list |
+| `CANDLE_FLUSH_INTERVAL_MS` | No | `5000` | Candle flush interval |
+| `CRON_SECRET` | Only for cleanup route | - | Protects `/api/cron/cleanup-candles` |
 
-## Key Components
+## Database Schema (High Level)
 
-### Hooks
+Schema file: `scripts/psql_schema.sql`
 
-**`useWebSocket`**
-- Manages WebSocket connection to Hyperliquid API
-- Handles subscriptions for order book and trades
-- Auto-reconnects on disconnect
+Core tables:
 
-**`useOrderBookState`**
-- Processes raw order book data
-- Aggregates price levels based on grouping
-- Tracks flash animations for new/updated levels
-- Calculates spread and depth visualization
+- Market data:
+  - `trades`
+  - `orderbook_snapshots`
+  - `candles`
+- Paper trading:
+  - `users`
+  - `positions`
+  - `paper_orders`
+  - `paper_trades`
+  - `balance_history`
 
-**`useTrades`**
-- Processes incoming trades
-- Maintains list of recent trades (max 50)
-- Formats trade data for display
+## Useful Endpoints
 
-### Components
+- `GET /api/health`
+  - Service status and websocket/aggregator/liquidation stats.
+- `GET /api/candles?symbol=BTC&interval=5m&limit=500`
+  - Returns candles (aggregates from stored 1m rows).
+- `GET /api/trades?symbol=BTC&limit=50&source=live`
+- `GET /api/orderbook?symbol=BTC&source=live`
 
-**`OrderBookHeader`**
-- Asset selector (BTC/ETH)
-- Price grouping dropdown
-- Tab selector (Orders/Trades)
-- Denomination toggle (Asset/USDC)
-- Connection status indicator
+Auth flow:
 
-**`OrderBookTable`**
-- Displays asks (sell orders) at top
-- Shows bid-ask spread
-- Displays bids (buy orders) at bottom
-- Visual depth bars showing cumulative size
+- `POST /api/auth/nonce`
+- `POST /api/auth/verify`
+- `GET /api/auth/me`
 
-**`TradesTable`**
-- Scrollable list of recent trades
-- Color-coded by side (green=buy, red=sell)
-- Shows price, size, and timestamp
+Paper trading routes:
 
-## API
+- `GET/POST /api/orders`
+- `POST /api/orders/match`
+- `POST /api/orders/cancel`
+- `GET /api/positions`
+- `GET /api/positions/open`
+- `POST /api/positions/close`
+- `GET /api/positions/trades`
 
-The application connects to Hyperliquid's WebSocket API:
+Optional maintenance:
 
-**Endpoint**: `wss://api.hyperliquid.xyz/ws`
+- `GET /api/cron/cleanup-candles` (requires `Authorization: Bearer <CRON_SECRET>`)
 
-**Subscriptions**:
-- `l2Book` - Level 2 order book data
-- `trades` - Recent trades
+## Scripts
 
-## Customization
+- `npm run dev` - start development server
+- `npm run build` - production build
+- `npm run start` - start production server
+- `npm run lint` - run ESLint
 
-### Price Grouping Options
+## Key Files
 
-Edit `lib/constants.ts`:
-```typescript
-export const BTC_GROUP_OPTIONS = [1, 2, 5, 10];
-export const ETH_GROUP_OPTIONS = [0.1, 0.2, 0.5, 1];
-```
+- `app/page.tsx` - main trading UI
+- `hooks/useWebSocket.tsx` - live market feed subscription
+- `hooks/useMockWebSocket.tsx` - mock stream generator
+- `services/index.ts` - background service bootstrap
+- `services/websocketService.ts` - Hyperliquid trade ingestion
+- `services/candleAggregator.ts` - 1m candle aggregation and DB flush
+- `services/liquidationService.ts` - liquidation loop
+- `app/api/*` - REST API routes
+- `scripts/psql_schema.sql` - DB schema
 
-### Number of Rows
-```typescript
-export const NUM_ROWS = 15; // Rows displayed per side
-```
+## Troubleshooting
 
-### Styling
+- `JWT_SECRET is not set`
+  - Add `JWT_SECRET` in `.env.local` and restart server.
+- Database connection errors
+  - Verify `PGHOST/PGPORT/PGUSER/PGDATABASE/PGPASSWORD` and that Postgres is running.
+- No live data
+  - Set `NEXT_PUBLIC_WS_SOURCE=live` and confirm outbound websocket access.
+- Wallet connect says MetaMask not detected
+  - Install/enable MetaMask (or compatible provider) and refresh.
+- Health check shows `not_started`
+  - Background services start only in Node runtime.
 
-Modify Tailwind classes in components or add custom CSS in `app/globals.css`
+## Safety Note
 
-## Performance Optimizations
-
-- `useMemo` for expensive calculations
-- `useCallback` for stable function references
-- Fixed row rendering to prevent layout shifts
-- Efficient price aggregation algorithm
-- Debounced flash animations
-
-## Browser Support
-
-- Chrome/Edge 90+
-- Firefox 88+
-- Safari 14+
-
-## Known Issues
-
-- WebSocket connection requires stable internet
-- Large price groupings may hide some orders
-
-
-## License
-
-MIT
-
-
-## Acknowledgments
-
-- Hyperliquid for providing the WebSocket API
-- Next.js team for the excellent framework
+Paper Dex is for simulation only. It uses mock USDC and does not place real on-chain trades.
