@@ -11,6 +11,8 @@ interface TradeTableProps {
     tradeForm: TradeFormState;
     onPositionSubmit: (submission: { orderType: 'market' | 'limit'; stopLossPrice: number | null }) => void;
     currentMarkPrice: number | null;
+    isPriceFeedAvailable: boolean;
+    priceFeedMessage?: string | null;
 }
 
 export function TradeTab({
@@ -20,7 +22,9 @@ export function TradeTab({
     formError,
     tradeForm,
     onPositionSubmit,
-    currentMarkPrice
+    currentMarkPrice,
+    isPriceFeedAvailable,
+    priceFeedMessage
 }: TradeTableProps) {
     const [orderType, setOrderType] = useState<'Limit' | 'Market'>('Limit');
     const [stopLossEnabled, setStopLossEnabled] = useState(false);
@@ -78,6 +82,8 @@ export function TradeTab({
             : null;
     const isMarketOrder = orderType === 'Market';
     const displayFormError = localFormError ?? formError;
+    const formDisabled = !isPriceFeedAvailable;
+    const formDisableMessage = priceFeedMessage ?? 'No live price feed. Trading is paused until prices recover.';
     const displayedPriceValue = isMarketOrder
         ? (currentMarkPrice != null ? currentMarkPrice.toFixed(1) : '')
         : tradeForm.inputPrice;
@@ -92,6 +98,10 @@ export function TradeTab({
 
     const handleSubmit = () => {
         clearFormErrors();
+        if (formDisabled) {
+            setLocalFormError(formDisableMessage);
+            return;
+        }
         if (isMarketOrder && (!Number.isFinite(Number(currentMarkPrice)) || Number(currentMarkPrice) <= 0)) {
             setLocalFormError('Market price unavailable. Please wait for live price.');
             return;
@@ -168,9 +178,15 @@ export function TradeTab({
         <div className="flex flex-col h-full">
             {/* Header */}
             <div className="text-[11px] uppercase tracking-wider text-gray-500 mb-2">Place Order</div>
+            {formDisabled ? (
+                <div className="mb-3 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-200">
+                    {formDisableMessage}
+                </div>
+            ) : null}
 
-            {/* Limit / Market toggle */}
-            <div className="grid grid-cols-2 gap-1 mb-3">
+            <div className={formDisabled ? 'pointer-events-none select-none opacity-55' : ''}>
+                {/* Limit / Market toggle */}
+                <div className="grid grid-cols-2 gap-1 mb-3">
                 <button
                     onClick={() => {
                         clearFormErrors();
@@ -197,10 +213,10 @@ export function TradeTab({
                 >
                     Market
                 </button>
-            </div>
+                </div>
 
-            {/* Long / Short toggle */}
-            <div className="grid grid-cols-2 gap-1 mb-4">
+                {/* Long / Short toggle */}
+                <div className="grid grid-cols-2 gap-1 mb-4">
                 <button
                     className={`py-2 text-xs font-semibold rounded cursor-pointer transition ${
                         isLong
@@ -221,7 +237,7 @@ export function TradeTab({
                 >
                     Short
                 </button>
-            </div>
+                </div>
 
             {/* Price */}
             <div className="mb-2">
@@ -313,7 +329,7 @@ export function TradeTab({
                                 v
                             </span>
                         </button>
-                        {sizeUnitMenuOpen ? (
+                        {sizeUnitMenuOpen && !formDisabled ? (
                             <div className="absolute right-0 mt-1 w-[74px] overflow-hidden rounded-md border border-white/10 bg-[#111823] shadow-lg shadow-black/40 z-20">
                                 <button
                                     type="button"
@@ -418,7 +434,7 @@ export function TradeTab({
                 </div>
             </div>
 
-            {displayFormError ? (
+                {displayFormError ? (
                 <div className="mb-3 flex justify-end">
                     <div className="relative group">
                         <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-rose-400/60 bg-rose-500/20 text-[10px] font-bold text-rose-300">
@@ -429,19 +445,20 @@ export function TradeTab({
                         </div>
                     </div>
                 </div>
-            ) : null}
+                ) : null}
 
-            {/* Submit */}
-            <button
+                {/* Submit */}
+                <button
                 onClick={handleSubmit}
                 className={`w-full py-3 rounded text-sm font-semibold cursor-pointer transition ${
                     isLong
                         ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
                         : 'bg-rose-500/10 border border-rose-500/30 text-rose-400 hover:bg-rose-500/20'
                 }`}
-            >
+                >
                 {orderType === 'Market' ? 'Open' : 'Place'} {isLong ? 'Long' : 'Short'} {orderType}
-            </button>
+                </button>
+            </div>
         </div>
     );
 }

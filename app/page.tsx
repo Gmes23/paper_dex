@@ -27,6 +27,7 @@ import type { MockTrade } from '@/lib/mockData';
 
 const wsSource = WS_SOURCE;
 const useLive = wsSource === 'live';
+const NO_PRICE_FEED_THRESHOLD_MS = 12000;
 
 export default function OrderBook() {
   const [symbol, setSymbol] = useState<Symbol>('BTC');
@@ -36,6 +37,13 @@ export default function OrderBook() {
   const orderBookDenomination: Denomination = 'asset';
   const [tradesDenomination, setTradesDenomination] = useState<Denomination>('asset');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+
+  // In flight guards
+  const matchingInFlightRef = useRef(false);
+  const closingPositionIdsRef = useRef<Set<number>>(new Set());
+  const cancellingOrderIdsRef = useRef<Set<number>>(new Set());
+
+
 
   const {
     fixedBids,
@@ -112,7 +120,10 @@ export default function OrderBook() {
     [handleOrderBook]
   );
 
-  useWebSocket({
+  const {
+    connectionState: liveConnectionState,
+    reconnectAttempt: liveReconnectAttempt,
+  } = useWebSocket({
     symbol,
     onOrderBookUpdate: handleOrderBook,
     onTradesUpdate: handleTrades,
@@ -128,15 +139,38 @@ export default function OrderBook() {
     tradeIntervalMs: 700,
     volatility: 0.01,
   });
-  const orderBookStalenessMs =
-    lastUpdateTimestamp != null
-      ? Math.max(0, Date.now() - lastUpdateTimestamp)
-      : null;
-
   const [markPrice, setMarkPrice] = useState<number | null>(null);
   const bestBidRef = useRef(bestBid);
   const bestAskRef = useRef(bestAsk);
   const currentMarkPriceRef = useRef<number | null>(null);
+  const [clockMs, setClockMs] = useState(() => Date.now());
+  const orderBookStalenessMs =
+    lastUpdateTimestamp != null
+      ? Math.max(0, clockMs - lastUpdateTimestamp)
+      : null;
+  const noPriceFeed = orderBookStalenessMs == null || orderBookStalenessMs >= NO_PRICE_FEED_THRESHOLD_MS;
+  const isMarkPriceValid = markPrice != null && Number.isFinite(markPrice) && markPrice > 0;
+  const isPriceFeedAvailable = isMarkPriceValid && !noPriceFeed;
+  const effectiveMarkPrice = isPriceFeedAvailable ? markPrice : null;
+  const showReconnectBanner =
+    useLive && (liveConnectionState === 'connecting' || liveConnectionState === 'reconnecting');
+  const reconnectLabel =
+    liveConnectionState === 'connecting'
+      ? 'Connecting to live feed...'
+      : `Reconnecting to live feed${liveReconnectAttempt > 0 ? ` (attempt ${liveReconnectAttempt})` : ''}...`;
+  const orderBookAgeLabel =
+    orderBookStalenessMs == null
+      ? 'Updated: n/a'
+      : orderBookStalenessMs < 1000
+        ? `Updated: ${orderBookStalenessMs}ms ago`
+        : `Updated: ${(orderBookStalenessMs / 1000).toFixed(1)}s ago`;
+  const priceFeedMessage = !isPriceFeedAvailable
+    ? (
+      showReconnectBanner
+        ? 'Reconnecting to live price feed. Order entry is disabled.'
+        : 'No active price feed. Order entry is disabled until prices resume.'
+    )
+    : null;
 
   const [tradeForm, setTradeForm] = useState<TradeFormState>({
     tradeAsset: symbol,
@@ -161,6 +195,13 @@ export default function OrderBook() {
   } = usePaperOrders();
   const symbolOpenOrders = openOrders.filter((order) => order.symbol === symbol);
   const [markPriceBySymbol, setMarkPriceBySymbol] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setClockMs(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (markPrice == null) return;
@@ -227,6 +268,10 @@ export default function OrderBook() {
 
   const addPosition = useCallback(async (submission: { orderType: 'market' | 'limit'; stopLossPrice: number | null }) => {
     setTradeFormError(null);
+    if (!isPriceFeedAvailable) {
+      setTradeFormError('No price feed available. Reconnecting...');
+      return;
+    }
     const rawSize = Number(tradeForm.size);
     const inputPrice = Number(tradeForm.inputPrice);
     const referencePrice =
@@ -282,6 +327,7 @@ export default function OrderBook() {
     tradeForm.leverage,
     tradeForm.size,
     tradeForm.tradeAsset,
+    isPriceFeedAvailable,
   ]);
 
   useEffect(() => {
@@ -310,6 +356,10 @@ export default function OrderBook() {
     let cancelled = false;
 
     const runMatch = async () => {
+      if (matchingInFlightRef.current) return;
+      matchingInFlightRef.current = true;
+
+
       try {
         const results = await Promise.all(
           symbolsWithActivity
@@ -337,6 +387,8 @@ export default function OrderBook() {
         if (!cancelled) {
           console.warn('Failed to match paper orders', err);
         }
+      } finally {
+        matchingInFlightRef.current = false;
       }
     };
 
@@ -396,11 +448,16 @@ export default function OrderBook() {
       {/* Navbar */}
       <Navbar
         symbol={symbol}
-        markPrice={markPrice}
+        markPrice={effectiveMarkPrice}
         availableBalance={user?.availableBalance ?? 0}
         onSymbolChange={setSymbol}
         symbolOptions={['BTC', 'ETH']}
       />
+      {showReconnectBanner ? (
+        <div className="mx-3 mb-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] uppercase tracking-wide text-amber-200">
+          {reconnectLabel} Trading controls will resume automatically.
+        </div>
+      ) : null}
 
       {/* Main content: 3 columns */}
       <div className="flex-1 flex min-h-0">
@@ -412,7 +469,7 @@ export default function OrderBook() {
             symbol={symbol}
             interval={interval}
             onIntervalChange={setChartInterval}
-            markPrice={markPrice}
+            markPrice={effectiveMarkPrice}
             openOrders={symbolOpenOrders}
           />
 
@@ -423,6 +480,8 @@ export default function OrderBook() {
               openOrders={openOrders}
               getMarkPriceForSymbol={getMarkPriceForSymbol}
               onClosePosition={async (id) => {
+                if (closingPositionIdsRef.current.has(id)) return;
+                closingPositionIdsRef.current.add(id);
                 try {
                   await closePosition(id);
                   await Promise.all([
@@ -433,9 +492,13 @@ export default function OrderBook() {
                   ]);
                 } catch (err) {
                   alert((err as Error).message ?? 'Failed to close position');
+                } finally {
+                  closingPositionIdsRef.current.delete(id);
                 }
               }}
               onCancelOrder={async (id) => {
+                if (cancellingOrderIdsRef.current.has(id)) return;
+                cancellingOrderIdsRef.current.add(id);
                 try {
                   await cancelOrder(id);
                   await Promise.all([
@@ -444,6 +507,8 @@ export default function OrderBook() {
                   ]);
                 } catch (err) {
                   alert((err as Error).message ?? 'Failed to cancel order');
+                } finally {
+                  cancellingOrderIdsRef.current.add(id);
                 }
               }}
             />
@@ -458,29 +523,27 @@ export default function OrderBook() {
                 <button
                   type="button"
                   onClick={() => setActiveTab('orderbook')}
-                  className={`transition cursor-pointer ${
-                    activeTab === 'orderbook'
+                  className={`transition cursor-pointer ${activeTab === 'orderbook'
                       ? 'text-white'
                       : 'text-gray-500 hover:text-white'
-                  }`}
+                    }`}
                 >
                   Order Book
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveTab('trades')}
-                  className={`transition cursor-pointer ${
-                    activeTab === 'trades'
+                  className={`transition cursor-pointer ${activeTab === 'trades'
                       ? 'text-white'
                       : 'text-gray-500 hover:text-white'
-                  }`}
+                    }`}
                 >
                   Trades
                 </button>
 
               </div>
               <span className="text-[10px] text-gray-500 tabular-nums">
-                Updated: {orderBookStalenessMs != null ? `${orderBookStalenessMs}ms ago` : 'n/a'}
+                {orderBookAgeLabel}
               </span>
             </div>
             <div className="flex-1 overflow-y-auto">
@@ -489,7 +552,7 @@ export default function OrderBook() {
                   fixedAsks={fixedAsks}
                   fixedBids={fixedBids}
                   spread={spread}
-                  markPrice={markPrice}
+                  markPrice={effectiveMarkPrice}
                   maxAskTotal={orderBookDenomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
                   maxBidTotal={orderBookDenomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
                   denomination={orderBookDenomination}
@@ -520,7 +583,9 @@ export default function OrderBook() {
               formError={tradeFormError}
               tradeForm={tradeForm}
               onPositionSubmit={addPosition}
-              currentMarkPrice={markPrice}
+              currentMarkPrice={effectiveMarkPrice}
+              isPriceFeedAvailable={isPriceFeedAvailable}
+              priceFeedMessage={priceFeedMessage}
             />
           </div>
         </div>

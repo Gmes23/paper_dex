@@ -143,7 +143,7 @@ export function Navbar({ symbol, markPrice, availableBalance, onSymbolChange, sy
             <button
               onClick={handleConnect}
               disabled={loading}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-sm disabled:opacity-50 transition"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-2xl border border-white/10 bg-white/5 cursor-pointer hover:bg-white/10 text-sm disabled:opacity-50 transition"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"

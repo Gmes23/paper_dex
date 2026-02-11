@@ -74,7 +74,7 @@ export function OrderBookTable({
 
             {/* Bids */}
             <div className="flex flex-col">
-                {fixedBids.map((bid, index) => {
+                {[...fixedBids].reverse().map((bid, index) => {
                     const depthValue = bid
                         ? (denomination === 'asset' ? bid.total : bid.totalUsdc)
                         : 0;

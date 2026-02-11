@@ -11,6 +11,8 @@ interface UseWebSocketProps {
   enabled?: boolean;
 }
 
+export type WebSocketConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting';
+
 export function useWebSocket({
   symbol,
   onOrderBookUpdate,
@@ -18,8 +20,15 @@ export function useWebSocket({
   enabled = true,
 }: UseWebSocketProps) {
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<WebSocketConnectionState>(
+    enabled ? 'connecting' : 'idle'
+  );
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [lastMessageAt, setLastMessageAt] = useState<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  const hasConnectedOnceRef = useRef(false);
+  const reconnectingRef = useRef(false);
   const orderBookCbRef = useRef(onOrderBookUpdate);
   const tradesCbRef = useRef(onTradesUpdate);
 
@@ -45,6 +54,7 @@ export function useWebSocket({
         return;
       }
 
+      setConnectionState(hasConnectedOnceRef.current || reconnectingRef.current ? 'reconnecting' : 'connecting');
       const ws = new WebSocket(API_URL);
       wsRef.current = ws;
 
@@ -56,6 +66,10 @@ export function useWebSocket({
 
         // console.log('WebSocket connected');
         setIsConnected(true);
+        setConnectionState('connected');
+        setReconnectAttempt(0);
+        reconnectingRef.current = false;
+        hasConnectedOnceRef.current = true;
 
         ws.send(JSON.stringify({
           method: 'subscribe',
@@ -84,8 +98,10 @@ export function useWebSocket({
           const data = JSON.parse(event.data);
 
           if (data.channel === 'l2Book' && data.data) {
+            setLastMessageAt(Date.now());
             orderBookCbRef.current(data.data);
           } else if (data.channel === 'trades' && data.data) {
+            setLastMessageAt(Date.now());
             tradesCbRef.current(data.data);
 
 
@@ -118,10 +134,14 @@ export function useWebSocket({
         }
       };
 
-      ws.onerror = (error) => {
+      ws.onerror = () => {
         if (cancelled || wsRef.current !== ws) return;
         // console.error('WebSocket error:', error);
         setIsConnected(false);
+        if (enabled) {
+          setConnectionState('reconnecting');
+          reconnectingRef.current = true;
+        }
       };
 
       ws.onclose = () => {
@@ -132,6 +152,13 @@ export function useWebSocket({
 
         // console.log('WebSocket disconnected');
         setIsConnected(false);
+        if (!enabled) {
+          setConnectionState('idle');
+          return;
+        }
+        setConnectionState('reconnecting');
+        reconnectingRef.current = true;
+        setReconnectAttempt((prev) => prev + 1);
 
         reconnectTimeoutRef.current = setTimeout(() => {
           if (cancelled) return;
@@ -147,7 +174,8 @@ export function useWebSocket({
 
     return () => {
       cancelled = true;
-      setIsConnected(false);
+      reconnectingRef.current = false;
+      hasConnectedOnceRef.current = false;
 
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -175,5 +203,10 @@ export function useWebSocket({
     };
   }, [symbol, enabled]);
 
-  return { isConnected };
+  return {
+    isConnected: enabled ? isConnected : false,
+    connectionState: enabled ? connectionState : 'idle',
+    reconnectAttempt: enabled ? reconnectAttempt : 0,
+    lastMessageAt: enabled ? lastMessageAt : null,
+  };
 }
