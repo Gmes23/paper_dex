@@ -152,7 +152,7 @@ export default function OrderBook() {
   const isMarkPriceValid = markPrice != null && Number.isFinite(markPrice) && markPrice > 0;
   const isPriceFeedAvailable = isMarkPriceValid && !noPriceFeed;
   const effectiveMarkPrice = isPriceFeedAvailable ? markPrice : null;
-  const showReconnectBanner =
+  const isLiveFeedTransitioning =
     useLive && (liveConnectionState === 'connecting' || liveConnectionState === 'reconnecting');
   const reconnectLabel =
     liveConnectionState === 'connecting'
@@ -166,11 +166,17 @@ export default function OrderBook() {
         : `Updated: ${(orderBookStalenessMs / 1000).toFixed(1)}s ago`;
   const priceFeedMessage = !isPriceFeedAvailable
     ? (
-      showReconnectBanner
+      isLiveFeedTransitioning
         ? 'Reconnecting to live price feed. Order entry is disabled.'
         : 'No active price feed. Order entry is disabled until prices resume.'
     )
     : null;
+  const hasOrderBookSnapshot = lastUpdateTimestamp != null;
+  const showOrderBookLoadingOverlay =
+    activeTab === 'orderbook' && (!hasOrderBookSnapshot || (isLiveFeedTransitioning && noPriceFeed));
+  const orderBookLoadingLabel = isLiveFeedTransitioning
+    ? reconnectLabel
+    : `Loading ${symbol} order book...`;
 
   const [tradeForm, setTradeForm] = useState<TradeFormState>({
     tradeAsset: symbol,
@@ -453,11 +459,6 @@ export default function OrderBook() {
         onSymbolChange={setSymbol}
         symbolOptions={['BTC', 'ETH']}
       />
-      {showReconnectBanner ? (
-        <div className="mx-3 mb-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] uppercase tracking-wide text-amber-200">
-          {reconnectLabel} Trading controls will resume automatically.
-        </div>
-      ) : null}
 
       {/* Main content: 3 columns */}
       <div className="flex-1 flex min-h-0">
@@ -546,27 +547,39 @@ export default function OrderBook() {
                 {orderBookAgeLabel}
               </span>
             </div>
-            <div className="flex-1 overflow-y-auto">
-              {activeTab === 'orderbook' ? (
-                <OrderBookTable
-                  fixedAsks={fixedAsks}
-                  fixedBids={fixedBids}
-                  spread={spread}
-                  markPrice={effectiveMarkPrice}
-                  maxAskTotal={orderBookDenomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
-                  maxBidTotal={orderBookDenomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
-                  denomination={orderBookDenomination}
-                  error={error}
-                  onPriceSelect={(price) => callbackTradeForm({ inputPrice: price })}
-                />
-              ) : (
-                <TradesTable
-                  trades={trades}
-                  denomination={tradesDenomination}
-                  symbol={symbol}
-                  onToggleDenomination={toggleTradesDenomination}
-                />
-              )}
+            <div className="relative flex-1 overflow-hidden">
+              <div className="h-full overflow-y-auto">
+                {activeTab === 'orderbook' ? (
+                  <OrderBookTable
+                    fixedAsks={fixedAsks}
+                    fixedBids={fixedBids}
+                    spread={spread}
+                    markPrice={effectiveMarkPrice}
+                    maxAskTotal={orderBookDenomination === 'asset' ? maxAskTotal.asset : maxAskTotal.usdc}
+                    maxBidTotal={orderBookDenomination === 'asset' ? maxBidTotal.asset : maxBidTotal.usdc}
+                    denomination={orderBookDenomination}
+                    error={error}
+                    onPriceSelect={(price) => callbackTradeForm({ inputPrice: price })}
+                  />
+                ) : (
+                  <TradesTable
+                    trades={trades}
+                    denomination={tradesDenomination}
+                    symbol={symbol}
+                    onToggleDenomination={toggleTradesDenomination}
+                  />
+                )}
+              </div>
+              {showOrderBookLoadingOverlay ? (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[#0d1117]/75 backdrop-blur-[1px]">
+                  <div className="rounded-lg border border-white/15 bg-[#111723] px-4 py-3 text-center">
+                    <div className="mx-auto mb-2 h-5 w-5 animate-spin rounded-full border-2 border-white/20 border-t-cyan-300" />
+                    <p className="text-xs uppercase tracking-wide text-gray-200">
+                      {orderBookLoadingLabel}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
