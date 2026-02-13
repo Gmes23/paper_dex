@@ -113,6 +113,7 @@ CANDLE_FLUSH_INTERVAL_MS=5000
 
 # Optional: required only for /api/cron/cleanup-candles
 CRON_SECRET=replace_with_random_cron_secret
+CANDLE_RETENTION_DAYS=14
 ```
 
 3. Create database (if needed):
@@ -154,6 +155,7 @@ npm run dev
 | `WS_SYMBOLS` | No | `BTC,ETH,SOL,ARB` | Live ingestion symbols list |
 | `CANDLE_FLUSH_INTERVAL_MS` | No | `5000` | Candle flush interval |
 | `CRON_SECRET` | Only for cleanup route | - | Protects `/api/cron/cleanup-candles` |
+| `CANDLE_RETENTION_DAYS` | No | `14` | Keeps only the most recent N days of candle data |
 
 ## Database Schema (High Level)
 
@@ -199,7 +201,7 @@ Paper trading routes:
 
 Optional maintenance:
 
-- `GET /api/cron/cleanup-candles` (requires `Authorization: Bearer <CRON_SECRET>`)
+- `GET /api/cron/cleanup-candles` (requires `Authorization: Bearer <CRON_SECRET>`, prunes candles older than `CANDLE_RETENTION_DAYS`, default `14`)
 
 ## Scripts
 
